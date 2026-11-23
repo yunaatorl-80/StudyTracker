@@ -412,7 +412,7 @@ function profPanel() {
     <div class="row" style="gap:12px;align-items:center">
       <span id="pf-av">${avatarHtml(56)}</span>
       <span class="row" style="gap:6px;flex-wrap:wrap">
-        <label class="btn g s" style="cursor:pointer">🖼 Photo<input type="file" accept="image/*" data-act="profPhoto" hidden></label>
+        <span class="btn g s" role="button" tabindex="0" data-act="pick" data-for="profPhoto">🖼 Photo</span><input type="file" accept="image/*" data-act="profPhoto" hidden>
         ${p.photo ? '<button class="btn q s" data-act="profPhotoDel">Retirer</button>' : ''}
       </span></div>
     <input id="pf-name" placeholder="Nom d’utilisateur" value="${esc(p.name || '')}" maxlength="40" style="margin-top:12px">
@@ -669,7 +669,7 @@ function courses() {
       ${PALETTE.map(c => `<button class="sw ${(courseColor || '').toLowerCase() === c.toLowerCase() ? 'sel' : ''}" data-act="pickCourseColor" data-v="${c}" style="background:${c}"></button>`).join('')}
       <input type="color" id="c-color" value="${PALETTE[0]}" data-act="customCourseColor" title="Couleur personnalisée" style="width:34px;height:26px;padding:1px;border-radius:8px;cursor:pointer;background:var(--bg)">
       <span class="mut">de la matière</span></div>
-    <div class="row" style="margin-top:8px"><label class="btn g s" style="cursor:pointer">📄 Importer un Word ou un PDF<input type="file" id="c-file" accept=".docx,.pdf,.html,.txt" data-act="impCourse" hidden></label><span class="mut" id="c-fn"></span></div>
+    <div class="row" style="margin-top:8px"><span class="btn g s" role="button" tabindex="0" data-act="pick" data-for="impCourse">📄 Importer un Word ou un PDF</span><input type="file" id="c-file" accept=".docx,.pdf,.html,.txt" data-act="impCourse" hidden><span class="mut" id="c-fn"></span></div>
     <textarea id="c-notes" placeholder="Contenu du cours (texte simple, ou importé depuis Word en gardant la mise en forme)" style="margin-top:8px">${esc(draft.cNotes || '')}</textarea>
     ${recChips()}
     <div class="row" style="margin-top:8px"><button class="btn" data-act="addCourse">Enregistrer</button><button class="btn g" data-act="cancel">Annuler</button></div></div>
@@ -715,8 +715,8 @@ function courseView() {
   <div class="card" style="margin-top:10px;border-left:5px solid ${col}">
     <div class="row sp"><h2 style="margin:0">${esc(c.title)}</h2><span>${dot(c.subject)} <span class="tag">${esc(c.subject)}</span><span class="tag">${esc(c.semester)}</span></span></div>
     <div class="row" style="margin:10px 0 4px">
-      <label class="btn g s" style="cursor:pointer">📄 Ajouter un Word / PDF<input type="file" accept=".docx,.pdf,.html,.txt" data-act="impNotes" hidden></label>
-      <label class="btn g s" style="cursor:pointer">🖼 Ajouter des images<input type="file" accept="image/*" multiple data-act="impImages" data-id="${c.id}" hidden></label>
+      <span class="btn g s" role="button" tabindex="0" data-act="pick" data-for="impNotes" data-id="${c.id}">📄 Ajouter un Word / PDF</span><input type="file" accept=".docx,.pdf,.html,.txt" data-act="impNotes" data-id="${c.id}" hidden>
+      <span class="btn g s" role="button" tabindex="0" data-act="pick" data-for="impImages" data-id="${c.id}">🖼 Ajouter des images</span><input type="file" accept="image/*" multiple data-act="impImages" data-id="${c.id}" hidden>
       <button class="btn g s" data-act="editNotes" data-id="${c.id}">✎ Modifier</button>
     </div>
     ${itemRecHtml('course', c)}
@@ -763,12 +763,9 @@ let helpOpen = false;  // encart d'aide de l'onglet Tests & QCM
 function menuFor(id, kind) {
   if (!testMenu || testMenu.id !== id || testMenu.kind !== kind) return '';
   const items = kind === 'add' ? [
-    ['impQ', '📄 Fichier Word (.docx)'],
-    ['impQ', '📕 Fichier PDF'],
-    ['impQ', '📝 Fichier texte (.txt)'],
-    ['impQ', '{ } Fichier JSON'],
-    ['sep', ''],
+    ['pickQcm', '📄 Choisir un fichier (Word, PDF, texte, JSON)'],
     ['pasteQ', '📋 Coller du texte'],
+    ['sep', ''],
     ['impNewTest', '＋ Nouveau test depuis un fichier']
   ] : [
     ['relinkTest', '🔗 Rattacher à une matière / un cours'],
@@ -780,6 +777,51 @@ function menuFor(id, kind) {
     : `<button class="tmi ${cl || ''}" data-act="${act}" data-id="${id}">${label}</button>`).join('')}</div>`;
 }
 function closeTestMenu() { if (testMenu) { testMenu = null; render(); } }
+
+// sélecteur de fichier pour un QCM (Word, PDF, texte, JSON).
+// Créé et ouvert dans le clic : Safari/iPad n'autorise pas un .click() différé.
+function qcmPicker(testId) {
+  const inp = document.createElement('input');
+  inp.type = 'file';
+  inp.accept = '.docx,.pdf,.txt,.json,application/pdf,application/json,text/plain';
+  inp.style.position = 'fixed'; inp.style.left = '-9999px';
+  document.body.appendChild(inp);
+  inp.addEventListener('change', () => importQcmFile(inp, testId), { once: true });
+  return inp;
+}
+async function importQcmFile(inp, testId) {
+  const f = (inp.files || [])[0];
+  inp.remove();
+  if (!f) return;
+  const test = S.tests.find(x => x.id === testId);
+  if (!test) return;
+  try {
+    let qs;
+    if (/\.json$/i.test(f.name)) {
+      const j = JSON.parse(await f.text());
+      qs = (Array.isArray(j) ? j : j.questions).map(x => ({
+        q:x.q || x.question, choices:(x.choices || x.options || []).map(String),
+        answer:x.answer ?? x.correct ?? -1, expl:x.expl || x.explanation || ''
+      })).filter(x => x.q && x.choices && x.choices.length > 1);
+    } else {
+      let txt;
+      if (/\.pdf$/i.test(f.name)) txt = await readDoc(f, true);
+      else if (/\.docx$/i.test(f.name)) txt = await docxToHtml(await f.arrayBuffer());
+      else txt = await f.text();
+      qs = parseQCM(txt);
+    }
+    if (!qs || !qs.length) { toast('Aucune question reconnue dans ce fichier. Vérifie que les questions ont bien des propositions (a, b, c…).'); return; }
+    test.questions = (test.questions || []).concat(qs);
+    const noAns = qs.filter(q => q.answer < 0).length;
+    if (noAns === qs.length) {
+      const res = await promptDialog({title:'Aucune réponse détectée', text:'Le fichier ne contient aucune bonne réponse lisible. Tu peux saisir le corrigé maintenant (ex. « 1b 2a 3c » ou « b, a, c »), ou plus tard avec « 🔑 Corrigé ».', fields:[{label:'Corrigé (facultatif)', value:''}], ok:'Appliquer', danger:false});
+      if (res && res[0].trim()) applyKey(qs, res[0]);
+    }
+    const left = test.questions.filter(q => !(q.answer >= 0)).length;
+    flash = {title:qs.length + ' question(s) importée(s)', body:(left ? `${test.questions.length - left} bonne(s) réponse(s) détectée(s) sur ${test.questions.length}, ${left} à compléter.` : 'Les questions, les choix et les bonnes réponses ont été détectés automatiquement.') + ' Clique sur « ▶ Répondre » pour t’entraîner ; la correction s’affiche à la fin.'};
+    save(); render();
+  } catch (err) { toast('Import impossible : ' + err.message); }
+}
 
 // ---------- QCM ----------
 function allCorrOpen() { return Object.keys(openCorr).some(k => openCorr[k]); }
@@ -1229,6 +1271,12 @@ let pdfjsPromise = null;
 function loadPdfJs() {
   if (pdfjsPromise) return pdfjsPromise;
   pdfjsPromise = (async () => {
+    // 1) lecteur embarqué (fichier unique ou fichiers à côté) : marche hors ligne
+    if (window.pdfjsLib && window.pdfjsLib.getDocument) {
+      try { window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'pdf.worker.min.js'; } catch (e) {}
+      return window.pdfjsLib;
+    }
+    // 2) sinon, chargement depuis un CDN (dépannage)
     const bases = [
       'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/',
       'https://unpkg.com/pdfjs-dist@3.11.174/build/'
@@ -1242,7 +1290,7 @@ function loadPdfJs() {
         return pdfjs;
       } catch (e) { err = e; }
     }
-    throw new Error('lecteur PDF indisponible (connexion internet ?)');
+    throw new Error('lecteur PDF indisponible (fichier pdf.min.js manquant ?)');
   })();
   return pdfjsPromise;
 }
@@ -1794,6 +1842,18 @@ document.addEventListener('change', async e => {
 async function handleAct(b, e) {
   const t = b;   // certains boutons (cases à cocher) utilisent t.checked
   const a = b.dataset.act, id = b.dataset.id, v = b.dataset.v;
+  // ouvre le sélecteur de fichiers : appel direct depuis le clic (indispensable sur iPad/Safari)
+  if (a === 'pick') {
+    const forAct = b.dataset.for;
+    const inp = forAct === 'impQ' || forAct === 'pickQcm'
+      ? qcmPicker(id)
+      : [...document.querySelectorAll('input[type=file][data-act="' + forAct + '"]')]
+          .find(x => (x.dataset.id || '') === (id || '') && x.offsetParent !== null) ||
+        [...document.querySelectorAll('input[type=file][data-act="' + forAct + '"]')].pop();
+    if (inp) inp.click();
+    return;
+  }
+  if (a === 'pickQcm') { testMenu = null; render(); const inp = qcmPicker(id); if (inp) inp.click(); return; }
   if (e.target.closest('.x') && a === 'openCourse') return;
   if (a === 'profMenu') { openProf = !openProf; paintProf(); return; }
   if (a === 'themeOpen') { openThemes = !openThemes; paintThemes(); return; }
@@ -1823,7 +1883,7 @@ async function handleAct(b, e) {
   if (a === 'bkSave') { await bkSave(); return; }
   if (a === 'bkRestore') { await bkRestore(); return; }
 
-  if (!['pickColor', 'pickCourseColor', 'addSubject', 'addCourse', 'cancel', 'form'].includes(a)) snapshot();
+  if (!['pick', 'pickQcm', 'pickColor', 'pickCourseColor', 'addSubject', 'addCourse', 'cancel', 'form'].includes(a)) snapshot();
   if (a === 'view') { view = v; form = null; cap = null; }
   else if (a === 'form') { form = v; mName = ''; draft = {}; draftRec = null; if (v === 'subject') newColor = PALETTE[0]; if (v === 'course') courseColor = null; }
   else if (a === 'cancel') { form = null; mName = ''; draft = {}; courseColor = null; }
@@ -2218,7 +2278,7 @@ async function handleAct(b, e) {
     const c = S.courses.find(c => c.id === id);
     cap = `<div class="backdrop" style="z-index:40"><div class="modal" style="max-width:720px">
       <h3>Contenu du cours</h3><p>Texte simple ou HTML (gras, titres, listes, tableaux).</p>
-      <div class="row" style="margin-top:10px"><label class="btn g s" style="cursor:pointer">🖼 Insérer une image<input type="file" accept="image/*" multiple data-act="enImage" hidden></label><span class="mut">l’image est insérée à la fin du texte, tu peux la déplacer</span></div>
+      <div class="row" style="margin-top:10px"><span class="btn g s" role="button" tabindex="0" data-act="pick" data-for="enImage">🖼 Insérer une image</span><input type="file" accept="image/*" multiple data-act="enImage" hidden><span class="mut">l’image est insérée à la fin du texte, tu peux la déplacer</span></div>
       <textarea id="en-text" style="min-height:280px;margin-top:8px;font-family:ui-monospace,monospace;font-size:13px">${esc(c.notes || '')}</textarea>
       <div class="acts"><button class="btn q" data-act="closeCap">Annuler</button><button class="btn" data-act="saveNotes" data-id="${id}">Enregistrer</button></div></div></div>`;
     render(); return;
