@@ -244,8 +244,18 @@ body.focus-on{padding-top:46px}
 .doc p:has(img),.doc p img{max-width:100%}
 
 /* pages PDF importées */
-.pdfpage{border-bottom:1px dashed var(--bd);padding-bottom:10px;margin-bottom:12px}
-.pdfpage:last-child{border-bottom:none}
+/* pages d'un PDF importé : rendues comme dans un lecteur PDF */
+.docwrap .doc figure.pdfpage{margin:0 0 14px;padding:0;text-align:center}
+.docwrap .doc figure.pdfpage img{display:block;width:100%;max-width:100%;height:auto;border-radius:6px;
+  border:1px solid var(--bd);box-shadow:0 2px 10px rgba(0,0,0,.18);background:#fff;margin:0 auto}
+.docwrap .doc figure.pdfpage figcaption{font-size:11.5px;color:var(--mut);margin-top:4px}
+/* lecteur PDF en plein écran */
+.pdfread{position:fixed;inset:0;z-index:70;background:#15181c;display:flex;flex-direction:column}
+.pdfread .bar{display:flex;align-items:center;gap:10px;padding:10px 14px;background:#1d2126;border-bottom:1px solid #2e333a;color:#e8eaed}
+.pdfread .bar .t{font-weight:600;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pdfread .view{flex:1;overflow:auto;padding:16px;text-align:center;-webkit-overflow-scrolling:touch}
+.pdfread .view img{display:block;max-width:100%;margin:0 auto 16px;background:#fff;box-shadow:0 3px 14px rgba(0,0,0,.5)}
+.pdfread .btn.q{color:#c9ced6;border-color:#3a4048}
 
 /* ---------- galerie de thèmes ---------- */
 .tgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:10px;margin-top:14px;max-height:60vh;overflow:auto}
@@ -385,3 +395,35 @@ body.focus-on{padding-top:46px}
    plus fiable que <label>+input sur iPad */
 span.btn{display:inline-flex;align-items:center;gap:4px;user-select:none;-webkit-user-select:none;-webkit-tap-highlight-color:transparent}
 span.btn:focus-visible{outline:2px solid var(--ac);outline-offset:2px}
+
+/* tableaux importés (Word / PDF) : un seul cadre, en-tête repéré */
+.doc table{border-collapse:collapse;width:100%;margin:10px 0;display:table}
+.doc table table{display:contents}
+.doc td p{margin:0}
+.doc tr:first-child td{background:color-mix(in srgb,var(--ac) 8%,var(--card));font-weight:650}
+/* images importées : jamais de hauteur nulle */
+.doc img{height:auto!important;min-height:1px}
+.doc figure.img{margin:12px 0;text-align:center}
+
+/* le document importé est isolé : ses styles ne fuient pas dans le reste de l'app */
+.docwrap{contain:layout style;isolation:isolate}
+.docwrap .doc{all:initial;display:block;font-family:inherit;color:var(--tx);font-size:14.5px;line-height:1.65;overflow-wrap:break-word}
+.docwrap .doc *{box-sizing:border-box;max-width:100%}
+.docwrap .doc h1{font-size:20px;font-weight:750;margin:16px 0 8px;line-height:1.3}
+.docwrap .doc h2{font-size:17px;font-weight:700;margin:14px 0 6px}
+.docwrap .doc h3{font-size:15px;font-weight:650;margin:12px 0 5px}
+.docwrap .doc h4,.docwrap .doc h5,.docwrap .doc h6{font-size:14.5px;font-weight:650;margin:10px 0 4px}
+.docwrap .doc p{margin:0 0 9px}
+.docwrap .doc ul,.docwrap .doc ol{margin:0 0 10px;padding-left:22px}
+.docwrap .doc ul{list-style:disc}.docwrap .doc ol{list-style:decimal}
+.docwrap .doc li{margin:2px 0;display:list-item}
+.docwrap .doc table{border-collapse:collapse;width:100%;margin:10px 0;border:1px solid var(--bd);border-radius:8px;overflow:hidden}
+.docwrap .doc td,.docwrap .doc th{border:1px solid var(--bd);padding:7px 10px;text-align:left;vertical-align:top;font-size:13.5px}
+.docwrap .doc thead th{background:color-mix(in srgb,var(--ac) 8%,var(--card));font-weight:650}
+.docwrap .doc tr:first-child td{background:transparent}
+.docwrap .doc img{max-width:100%;height:auto!important;border-radius:8px;margin:8px 0;display:inline-block}
+.docwrap .doc figure{margin:12px 0}
+.docwrap .doc blockquote{margin:8px 0;padding:4px 12px;border-left:3px solid var(--bd);color:var(--mut)}
+.docwrap .doc .c{text-align:center}.docwrap .doc .r{text-align:right}.docwrap .doc .j{text-align:justify}
+.docwrap .doc strong,.docwrap .doc b{font-weight:700}
+.docwrap .doc a{color:var(--ac);text-decoration:underline}

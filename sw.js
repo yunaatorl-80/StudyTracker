@@ -1,5 +1,5 @@
 /* StudyTracker — service worker : mise en cache pour fonctionner hors ligne */
-const VERSION = 'st-v4';
+const VERSION = 'st-v5';
 const CORE = [
   './',
   './index.html',
@@ -53,7 +53,21 @@ self.addEventListener('fetch', e => {
     return;
   }
 
-  // même origine : cache d'abord (rapide et hors ligne)
+  // même origine : le code (html/js/css) passe par le réseau d'abord pour recevoir
+  // les mises à jour ; le reste vient du cache (rapide et hors ligne)
+  const isCode = /\.(html|js|css|webmanifest)$/i.test(url.pathname) || url.pathname === '/';
+  if (url.origin === location.origin && isCode) {
+    e.respondWith((async () => {
+      try {
+        const r = await fetch(req, {cache:'no-cache'});
+        if (r && r.ok) { const c = await caches.open(VERSION); c.put(req, r.clone()); }
+        return r;
+      } catch (err) {
+        return (await caches.match(req)) || Response.error();
+      }
+    })());
+    return;
+  }
   if (url.origin === location.origin) {
     e.respondWith((async () => {
       const hit = await caches.match(req);

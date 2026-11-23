@@ -575,6 +575,23 @@ function render() {
   const fb = $('#focusbar'); if (fb) fb.remove();
   document.body.classList.toggle('focus-on', pomo.phase === 'work');
   if (pomo.phase === 'work') document.body.insertAdjacentHTML('beforeend', pomoMini());
+  const pv = $('#pdf-reader'); if (pv) pv.remove();
+  if (openPdf) document.body.insertAdjacentHTML('beforeend', pdfReaderHtml(openPdf));
+}
+
+// ---------- lecteur PDF plein écran ----------
+function pdfReaderHtml(id) {
+  const c = S.courses.find(x => x.id === id);
+  if (!c) { openPdf = null; return ''; }
+  const box = document.createElement('div');
+  box.innerHTML = c.notes || '';
+  const pages = [...box.querySelectorAll('figure.pdfpage img')].map(i => i.getAttribute('src'));
+  if (!pages.length) { openPdf = null; return ''; }
+  return `<div class="pdfread" id="pdf-reader">
+    <div class="bar"><span class="t">📖 ${esc(c.title)} · ${pages.length} page(s)</span>
+      <button class="btn q s" data-act="readPdfClose">✕ Fermer</button></div>
+    <div class="view">${pages.map((src, i) => `<img src="${src}" alt="Page ${i + 1}" loading="lazy">`).join('')}</div>
+  </div>`;
 }
 function flashHtml(f) {
   return `<div class="card" style="border-color:color-mix(in srgb,var(--ac) 40%,var(--bd));background:color-mix(in srgb,var(--ac) 7%,var(--card))">
@@ -718,9 +735,10 @@ function courseView() {
       <span class="btn g s" role="button" tabindex="0" data-act="pick" data-for="impNotes" data-id="${c.id}">📄 Ajouter un Word / PDF</span><input type="file" accept=".docx,.pdf,.html,.txt" data-act="impNotes" data-id="${c.id}" hidden>
       <span class="btn g s" role="button" tabindex="0" data-act="pick" data-for="impImages" data-id="${c.id}">🖼 Ajouter des images</span><input type="file" accept="image/*" multiple data-act="impImages" data-id="${c.id}" hidden>
       <button class="btn g s" data-act="editNotes" data-id="${c.id}">✎ Modifier</button>
+      ${/pdfpage/i.test(c.notes || '') ? `<button class="btn s" data-act="readPdf" data-id="${c.id}">📖 Lire en plein écran</button>` : ''}
     </div>
     ${itemRecHtml('course', c)}
-    <div class="doc" style="margin-top:8px">${c.notes ? (c.notes.trim().startsWith('<') ? c.notes : `<div class="q">${esc(c.notes)}</div>`) : '<span class="mut">Aucun contenu.</span>'}</div>
+    <div class="docwrap">${c.notes ? `<div class="doc" style="margin-top:8px">${c.notes.trim().startsWith('<') ? c.notes : `<div class="q">${esc(c.notes)}</div>`}</div>` : '<span class="mut">Aucun contenu.</span>'}</div>
     ${/<img/i.test(c.notes || '') ? `<div class="row" style="margin-top:10px"><button class="btn g s" data-act="delImages" data-id="${c.id}">🗑 Supprimer les images</button><span class="mut">le texte et sa mise en forme sont conservés</span></div>` : ''}
   </div>
   <h2>Tests liés</h2>
@@ -753,13 +771,14 @@ function tests() {
       ${menuFor(t.id, 'add')}${menuFor(t.id, 'more')}
       <div class="row" style="margin-top:8px"><span class="mut">Note manuelle :</span><input type="number" id="s-${t.id}" min="0" step="0.5" placeholder="Note"> / <input type="number" id="m-${t.id}" min="1" step="0.5" value="20"><input type="date" id="d-${t.id}" value="${today()}"><button class="btn s" data-act="addAttempt" data-id="${t.id}">Ajouter</button></div>
       ${itemRecHtml('test', t)}
-      ${open[t.id] ? `<div style="margin-top:8px">${[...all(t)].reverse().map(a => `<div class="row sp mut"><span>${fmt(a.date)} · cycle ${(a.round || 0) + 1}</span><span class="pill ${cls(pct(a))}">${a.score}/${a.max} (${f1(pct(a))})</span><button class="x" data-act="delAttempt" data-id="${a.id}">✕</button></div>`).join('')}</div>` : ''}</div>`;
+      ${open[t.id] ? `<div style="margin-top:8px">${[...all(t)].reverse().map(a => `<div class="row sp mut"><span>${fmt(a.date)} · cycle ${(a.round || 0) + 1}</span><span class="row"><span class="pill ${cls(pct(a))}">${a.score}/${a.max} (${f1(pct(a))})</span><button class="btn q s" data-act="editAttempt" data-id="${a.id}" title="Modifier cette note">✎</button><button class="x" data-act="delAttempt" data-id="${a.id}">✕</button></span></div>`).join('')}</div>` : ''}</div>`;
   }).join('') || '<div class="card empty">Aucun test. Crée un test puis importe un QCM depuis Word.</div>'}`;
 }
 
 // ---------- menus d'actions (QCM) ----------
 let testMenu = null;   // {id, kind:'add'|'more'}
 let helpOpen = false;  // encart d'aide de l'onglet Tests & QCM
+let openPdf = null;    // cours PDF affiché en plein écran
 function menuFor(id, kind) {
   if (!testMenu || testMenu.id !== id || testMenu.kind !== kind) return '';
   const items = kind === 'add' ? [
@@ -1100,9 +1119,48 @@ function alignOf(s) {
   const j = (s.match(/text-align\s*:\s*(both)/i) || [])[1];
   return j ? 'justify' : '';
 }
+// reconstruit proprement les tableaux : un seul <table>, lignes regroupées,
+// première ligne en en-tête (<th>), tableaux vides et imbrications supprimés
+function tidyTables(html) {
+  let h = String(html || '');
+  // 1) on aplatit les imbrications : <table><table>…</table><table>…</table></table>
+  for (let guard = 0; guard < 12; guard++) {
+    const before = h;
+    h = h.replace(/<table([^>]*)>\s*(?=<table)/gi, '')
+         .replace(/<\/table>\s*(?=<\/table>)/gi, '')
+         .replace(/<\/table>\s*<table[^>]*>/gi, '');
+    if (h === before) break;
+  }
+  // 2) un seul <table> par bloc : toutes les lignes sont regroupées
+  h = h.replace(/<table[^>]*>([\s\S]*?)<\/table>/gi, (m, inner) => {
+    const rows = [];
+    inner.replace(/<tr[^>]*>([\s\S]*?)<\/tr>/gi, (mm, tr) => {
+      const cells = [];
+      tr.replace(/<(td|th)([^>]*)>([\s\S]*?)<\/\1>/gi, (mc, tag, attrs, content) => {
+        const w = (attrs.match(/width\s*:\s*([\d.]+)\s*px/i) || [])[1];
+        cells.push({w: w ? Math.round(+w) : null, html: String(content).replace(/^<p[^>]*>([\s\S]*?)<\/p>$/i, '$1').trim()});
+        return '';
+      });
+      if (cells.length) rows.push(cells);
+      return '';
+    });
+    if (!rows.length) return '';
+    const th = c => `<th${c.w ? ` style="width:${c.w}px"` : ''}>${c.html}</th>`;
+    const td = c => `<td${c.w ? ` style="width:${c.w}px"` : ''}>${c.html}</td>`;
+    const head = '<tr>' + rows[0].map(th).join('') + '</tr>';
+    const body = rows.slice(1).map(r => '<tr>' + r.map(td).join('') + '</tr>').join('');
+    return `<table><thead>${head}</thead>${body ? `<tbody>${body}</tbody>` : ''}</table>`;
+  });
+  return h;
+}
 function cell(s) {
   const w = (s.match(/width\s*:\s*([\d.]+)\s*px/i) || [])[1];
-  return `<td${w ? ` style="width:${Math.round(+w)}px"` : ''}>${s}</td>`;
+  // le texte de la cellule est mis à plat : un <p> y ajoute des marges et décale les lignes
+  const flat = String(s || '')
+    .replace(/<p[^>]*>\s*<\/p>/gi, '')
+    .replace(/<p[^>]*>([\s\S]*?)<\/p>/gi, (m, t) => (/<(ul|ol|table|h[1-6])/i.test(t) ? m : t + '<br>'))
+    .replace(/<br>\s*$/, '');
+  return `<td${w ? ` style="width:${Math.round(+w)}px"` : ''}>${flat.trim()}</td>`;
 }
 // compression des images pour ne pas alourdir la sauvegarde (et ne pas dépasser le quota)
 function compressImage(file, maxW = 1280, quality = 0.82) {
@@ -1165,7 +1223,9 @@ async function docxToHtml(arrayBuffer) {
     })
   });
   let html = res.value || '';
-  html = html.replace(/<p>(\s|&nbsp;)*<\/p>/g, '<p><br></p>');
+  html = html.replace(/<p>(\s|&nbsp;)*<\/p>/g, '');
+  // une image seule dans un paragraphe devient une <figure> (affichage propre, marges maîtrisées)
+  html = html.replace(/<p>\s*(<img[^>]*>)\s*<\/p>/gi, '<figure class="img">$1</figure>');
   // styles de paragraphe
   html = html.replace(/<(p|h[1-6]|li)([^>]*?)style="([^"]*)"([^>]*)>/gi, (m, tag, a1, st, a2) => {
     const al = alignOf(st), attrs = a1 + a2;
@@ -1174,9 +1234,10 @@ async function docxToHtml(arrayBuffer) {
     if (indent && +indent > 20) style += ` style="margin-left:${Math.min(+indent, 120)}px"`;
     return `<${tag}${attrs}${style}>`;
   });
-  // lignes de tableau
+  // tableaux : on reconstruit un seul <table> à partir de toutes les lignes trouvées
+  // (mammoth émet un <table> par ligne, parfois imbriqué : HTML invalide une fois collé)
   html = html.replace(/<td([^>]*)>([\s\S]*?)<\/td>/gi, (m, attrs, content) => cell(content));
-  html = html.replace(/<tr[^>]*>\s*<td>([\s\S]*?)<\/td>\s*<\/tr>/gi, (m, c) => `<table><tr>${cell(c)}</tr></table>`);
+  html = tidyTables(html);
   // gras / italique / couleur laissés tels quels ; suppression des attributs mammoth inutiles
   html = html.replace(/\s*style="text-align:\s*(left|right|center|justify);?"/gi, '');
   return reorderHtml(html.trim());
@@ -1301,62 +1362,57 @@ async function pdfToHtml(file, qcm) {
   const pdfjs = await loadPdfJs();
   const data = new Uint8Array(await file.arrayBuffer());
   const doc = await pdfjs.getDocument({data, isEvalSupported:false}).promise;
-  let html = '';
+  // QCM : on ne garde que le texte (la détection lit les lignes)
+  if (qcm) {
+    let txt = '';
+    for (let p = 1; p <= doc.numPages; p++) {
+      const page = await doc.getPage(p);
+      const content = await page.getTextContent();
+      txt += linesOf(content.items).map(l => l.s).join('\n') + '\n';
+    }
+    return txt;
+  }
+  // cours : chaque page est rendue comme dans un lecteur PDF (fidélité totale)
+  const pages = [];
   for (let p = 1; p <= doc.numPages; p++) {
     const page = await doc.getPage(p);
-    const content = await page.getTextContent();
-    // regrouper les fragments par ligne (même ordonnée)
-    const lines = [];
-    for (const it of content.items) {
-      if (!it.str || !it.str.trim()) continue;
-      const y = Math.round(it.transform[5]);
-      const x = it.transform[4];
-      let line = lines.find(l => Math.abs(l.y - y) <= 3);
-      if (!line) { line = {y, parts:[]}; lines.push(line); }
-      line.parts.push({x, s:it.str, w:it.width || 0});
-    }
-    lines.sort((a, b) => b.y - a.y);
-    const items = [];
-    for (const l of lines) {
-      l.parts.sort((a, b) => a.x - b.x);
-      let txt = '';
-      let prevEnd = null;
-      for (const pt of l.parts) {
-        if (prevEnd != null && pt.x - prevEnd > 12) txt += ' ';
-        txt += pt.s;
-        prevEnd = pt.x + pt.w;
-      }
-      txt = txt.replace(/\s+/g, ' ').trim();
-      if (txt) items.push({type:'text', s:txt, size:Math.max(...l.parts.map(x => x.w ? 1 : 1))});
-    }
-    // images de la page, avec leur position verticale
-    const imgs = [];
-    try {
-      const ops = await page.getOperatorList();
-      const OPS = pdfjs.OPS;
-      for (let i = 0; i < ops.fnArray.length; i++) {
-        if (ops.fnArray[i] === OPS.paintImageXObject || ops.fnArray[i] === OPS.paintJpegXObject) {
-          const name = ops.argsArray[i] && ops.argsArray[i][0];
-          if (name) imgs.push({name, y:null});
-        }
-      }
-    } catch (e) {}
-    // rendu des images : on les extrait via le canvas (ordre : après la page de texte)
-    let imgsHtml = '';
-    if (imgs.length) {
-      const vp = page.getViewport({scale:2});
-      const cv = document.createElement('canvas');
-      cv.width = Math.min(1400, Math.round(vp.width));
-      cv.height = Math.round(vp.height * (cv.width / vp.width));
-      await page.render({canvasContext:cv.getContext('2d'), viewport:page.getViewport({scale:cv.width / vp.width})}).promise;
-      imgsHtml = `<figure class="img"><img src="${cv.toDataURL('image/jpeg', 0.8)}" alt=""></figure>`;
-    }
-    const paras = [];
-    for (const it of items) paras.push(`<p>${esc(it.s)}</p>`);
-    if (qcm) { html += paras.join('') + '\n'; continue; }   // pas de rendu d'image pour un QCM
-    html += `<div class="pdfpage">${paras.join('')}${imgsHtml}</div>`;
+    // largeur cible : 1600 px max (net sur iPad, sans exploser la sauvegarde)
+    const base = page.getViewport({scale:1});
+    const scale = Math.min(2.2, Math.max(1.2, 1600 / base.width));
+    const vp = page.getViewport({scale});
+    const cv = document.createElement('canvas');
+    cv.width = Math.round(vp.width); cv.height = Math.round(vp.height);
+    const ctx2d = cv.getContext('2d');
+    ctx2d.fillStyle = '#fff'; ctx2d.fillRect(0, 0, cv.width, cv.height);
+    await page.render({canvasContext:ctx2d, viewport:vp}).promise;
+    // JPEG pour les pages sans transparence : beaucoup plus léger que le PNG
+    pages.push(cv.toDataURL('image/jpeg', 0.82));
   }
-  return qcm ? html : reorderHtml(html);
+  const html = pages.map((src, i) => `<figure class="pdfpage"><img src="${src}" alt="Page ${i + 1}"><figcaption>Page ${i + 1} / ${pages.length}</figcaption></figure>`).join('');
+  return html;
+}
+// regroupe les fragments de texte d'une page en lignes lisibles
+function linesOf(items) {
+  const lines = [];
+  for (const it of items) {
+    if (!it.str || !it.str.trim()) continue;
+    const y = Math.round(it.transform[5]);
+    const x = it.transform[4];
+    let line = lines.find(l => Math.abs(l.y - y) <= 3);
+    if (!line) { line = {y, parts:[]}; lines.push(line); }
+    line.parts.push({x, s:it.str, w:it.width || 0});
+  }
+  lines.sort((a, b) => b.y - a.y);
+  return lines.map(l => {
+    l.parts.sort((a, b) => a.x - b.x);
+    let txt = '', prevEnd = null;
+    for (const pt of l.parts) {
+      if (prevEnd != null && pt.x - prevEnd > 12) txt += ' ';
+      txt += pt.s;
+      prevEnd = pt.x + pt.w;
+    }
+    return {y:l.y, s:txt.replace(/\s+/g, ' ').trim()};
+  }).filter(l => l.s);
 }
 
 // ---------- import QCM : détection automatique ----------
@@ -1826,11 +1882,13 @@ document.addEventListener('change', async e => {
           const fn = $('#c-fn'); if (fn) fn.textContent = '✓ ' + f.name + ' — mise en forme conservée';
         } else {
           const c = S.courses.find(c => c.id === cid);
-          const isHtml = html.trim().startsWith('<');
           if (!c.notes || !String(c.notes).trim().startsWith('<')) c.notes = (c.notes ? '<div class="q">' + esc(c.notes) + '</div>' : '');
           c.notes = (c.notes ? c.notes + '\n' : '') + html;
           save(); render();
-          flash = {title:'Document importé', body:'Le fichier est affiché avec sa mise en forme d’origine (titres, gras, listes, tableaux, images).'};
+          const isPdf = /pdfpage/i.test(html);
+          flash = {title:'Document importé', body:isPdf
+            ? 'Le PDF est affiché comme dans un lecteur : chaque page est rendue telle quelle, avec sa mise en page d’origine. Utilise « 📖 Lire en plein écran » pour le lire confortablement.'
+            : 'Le fichier est affiché avec sa mise en forme d’origine (titres, gras, listes, tableaux, images).'};
         }
       }
     } catch (err) { toast('Import impossible : ' + err.message); }
@@ -2142,6 +2200,26 @@ async function handleAct(b, e) {
     if (isNaN(score) || isNaN(max) || max <= 0 || score < 0 || score > max) { toast('Note invalide.'); return; }
     S.attempts.push({id:uid(), testId:id, score, max, date:val('d-' + id) || today(), round:rd(S.tests.find(t => t.id === id))}); open[id] = true; save();
   }
+  else if (a === 'editAttempt') {
+    const at = S.attempts.find(x => x.id === id);
+    if (!at) return;
+    const tt = S.tests.find(t => t.id === at.testId);
+    const r = await promptDialog({
+      title:'Modifier la note',
+      text:`${tt ? tt.title : 'QCM'} — corrige le score, le barème ou la date.`,
+      fields:[
+        {label:'Note obtenue', value:String(at.score)},
+        {label:'Barème (total)', value:String(at.max)},
+        {label:'Date', value:at.date, type:'date'}
+      ],
+      ok:'Enregistrer', danger:false
+    });
+    if (!r) return;
+    const sc = parseFloat(String(r[0]).replace(',', '.')), mx = parseFloat(String(r[1]).replace(',', '.'));
+    if (isNaN(sc) || isNaN(mx) || mx <= 0 || sc < 0 || sc > mx) { toast('Note invalide : elle doit être comprise entre 0 et le barème.'); return; }
+    at.score = sc; at.max = mx; at.date = r[2] || at.date;
+    save(); toast('Note modifiée.');
+  }
   else if (a === 'delAttempt') {
     const at = S.attempts.find(x => x.id === id);
     if (!await confirmDialog({title:'Êtes-vous sûr de vouloir supprimer ce résultat ?', text:at ? `${at.score}/${at.max} du ${fmt(at.date)} sera définitivement supprimé.` : ''})) return;
@@ -2274,6 +2352,8 @@ async function handleAct(b, e) {
     if (r) setColor(v, r[0]);
     return;
   }
+  else if (a === 'readPdf') { openPdf = id; render(); return; }
+  else if (a === 'readPdfClose') { openPdf = null; render(); return; }
   else if (a === 'editNotes') {
     const c = S.courses.find(c => c.id === id);
     cap = `<div class="backdrop" style="z-index:40"><div class="modal" style="max-width:720px">
