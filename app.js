@@ -2,7 +2,8 @@
    Créé par Lem HORNOY */
 
 let S = {courses:[], tests:[], attempts:[], events:[], exams:[], set:{theme:'auto', rank:true, colors:{}, done:{}}};
-let view = 'dash', filt = {sem:'', sub:''}, open = {}, form = null, cid = null, Q = null, subj = '', sSem = '', cap = null;
+const SEM_ALL = '__all__';
+let view = 'dash', filt = {sem:'', sub:''}, semView = SEM_ALL, open = {}, form = null, cid = null, Q = null, subj = '', sSem = '', rSem = '', cap = null;
 let now = new Date();
 let cal = {y:now.getFullYear(), m:now.getMonth(), sel:null, mode:'month'};
 let ref = null, saveT = null, flash = null, newColor = '#2f5fd0', courseColor = null, mName = '', draft = {};
@@ -81,6 +82,15 @@ async function init() {
     setStatus('Mode local : données conservées dans ce navigateur.');
   }
   S.set = Object.assign({theme:'auto', rank:true, colors:{}, done:{}, focus:{}, help:'', recPreset:null, autoEvents:true}, S.set);
+  // sauvegarde ancienne : « 1 » devient « S1 », les tableaux de semestres restent intacts
+  try {
+    S.courses.forEach(c => { c.semester = normSem(c.semester); });
+    S.exams.forEach(e => { e.semester = normSem(e.semester); });
+    Object.keys(S.set.semOf || {}).forEach(sb => {
+      const l = Array.isArray(S.set.semOf[sb]) ? S.set.semOf[sb] : [S.set.semOf[sb]];
+      setSemsOf(sb, l);
+    });
+  } catch (e) {}
   // migration des libellés de rappels automatiques
   for (const e of S.events) {
     if (!e.autoKey) continue;
@@ -161,8 +171,90 @@ const testsOfCourse = c => S.tests.filter(t => t.courseId === c.id);
 const courseStats = c => statsFor(testsOfCourse(c));
 const testsOfSubject = s => S.tests.filter(t => t.subject === s);
 const subjStats = s => statsFor(testsOfSubject(s));
-const subjects = () => [...new Set([...S.courses.map(c => c.subject), ...S.tests.map(t => t.subject), ...S.exams.map(e => e.subject), ...Object.keys(S.set.colors || {})])].filter(Boolean).sort();
-const semesters = () => [...new Set([...S.courses.map(c => c.semester), ...S.exams.map(e => e.semester)])].filter(Boolean).sort();
+const subjects = () => [...new Set([...S.courses.map(c => c.subject), ...S.tests.map(t => t.subject), ...S.exams.map(e => e.subject), ...Object.keys(S.set.colors || {}), ...Object.keys(S.set.semOf || {})])].filter(Boolean).sort();
+// semestres d'une matière (facultatifs) : S.set.semOf[matière] = ['S3'] ou ['S3','S4']
+function semsOf(sub) {
+  const m = (S.set.semOf || {})[sub];
+  if (Array.isArray(m)) return [...new Set(m.map(normSem).filter(Boolean))];
+  if (typeof m === 'string' && m) return [normSem(m)];
+  // à défaut, les semestres des cours de la matière
+  return [...new Set(S.courses.filter(c => c.subject === sub && c.semester).map(c => normSem(c.semester)))];
+}
+// premier semestre (pour pré-remplir un cours)
+function semOf(sub) { return semsOf(sub)[0] || ''; }
+function setSemsOf(sub, list) {
+  if (!S.set.semOf) S.set.semOf = {};
+  const clean = [...new Set(list.map(x => normSem(x)).filter(Boolean))].sort();
+  if (clean.length) S.set.semOf[sub] = clean; else delete S.set.semOf[sub];
+  return clean;
+}
+// moyenne pondérée par le coefficient de chaque matière
+function weightedAvg(tests) {
+  const by = {};
+  for (const t of tests) {
+    const p = avg(cur(t).map(pct));
+    if (p == null) continue;
+    const s = t.subject || '';
+    (by[s] = by[s] || []).push(p);
+  }
+  const keys = Object.keys(by);
+  if (!keys.length) return null;
+  let num = 0, den = 0;
+  for (const s of keys) {
+    const m = avg(by[s]);
+    if (m == null) continue;
+    const c = coefOf(s);
+    num += m * c; den += c;
+  }
+  return den ? num / den : null;
+}
+const semsLabel = sub => { const l = semsOf(sub); return l.length ? l.join(' · ') : ''; };
+// coefficient d'une matière (défaut 1) : il pondère la moyenne générale
+function coefOf(sub) {
+  const c = (S.set.coefs || {})[sub];
+  const n = parseFloat(c);
+  return !isNaN(n) && n > 0 ? n : 1;
+}
+function setCoefOf(sub, n) {
+  if (!S.set.coefs) S.set.coefs = {};
+  const v = parseFloat(String(n).replace(',', '.'));
+  if (!isNaN(v) && v > 0) S.set.coefs[sub] = v; else delete S.set.coefs[sub];
+}
+// « 1 » et « s1 » deviennent « S1 » : un seul nom par semestre
+function normSem(x) {
+  const t = String(x || '').trim().replace(/\s+/g, '');
+  if (!t) return '';
+  const m = t.match(/^[Ss]?0*(\d{1,2})$/);
+  if (m) return 'S' + m[1];
+  const m2 = t.match(/^[Ss]emestre0*(\d{1,2})$/i);
+  if (m2) return 'S' + m2[1];
+  return t.charAt(0).toUpperCase() + t.slice(1);
+}
+const semesters = () => [...new Set([
+  ...S.courses.map(c => normSem(c.semester)),
+  ...S.exams.map(e => normSem(e.semester)),
+  ...Object.values(S.set.semOf || {}).flatMap(v => Array.isArray(v) ? v : [v]).map(normSem)
+])].filter(Boolean).sort();
+// libellé d'un semestre pour l'affichage (« Global » = tout mélangé)
+function semLabel(sem) { return sem === SEM_ALL || !sem ? '🌍 Global' : sem; }
+// ---------- filtre global semestre / global ----------
+// « semView » = SEM_ALL (global) ou un semestre précis ; les éléments sans semestre
+// restent visibles partout (matières non affectées).
+function inSem(sem) {
+  if (!semView || semView === SEM_ALL) return true;
+  if (!sem) return true;
+  if (Array.isArray(sem)) return sem.includes(semView);
+  return sem === semView;
+}
+// une matière est visible si l'un de ses semestres correspond au filtre
+const subInSem = sub => { const l = semsOf(sub); return !l.length || inSem(l); };
+// un cours suit son semestre propre, sinon ceux de sa matière
+const semCourses = () => S.courses.filter(c => inSem(c.semester) && (c.semester || inSem(semsOf(c.subject)) || subInSem(c.subject)));
+const semTests = () => S.tests.filter(t => {
+  if (t.scope === 'course') { const c = S.courses.find(c => c.id === t.courseId); return inSem(c ? c.semester : ''); }
+  return inSem(semsOf(t.subject));
+});
+const semExams = () => S.exams.filter(e => inSem(e.semester));
 function spark(ps) {
   if (ps.length < 2) return '';
   const w = 110, h = 28;
@@ -391,9 +483,36 @@ async function recDialog(kind, id) {
   save(); render();
   toast(days.length ? 'Révisions mises à jour : J' + item.rec.days.join(' / J') + '.' : 'Révisions automatiques désactivées pour cet élément.');
 }
-// couleur d'un QCM : celle de son cours, sinon celle de sa matière
+// fenêtre unique d'une matière : couleur, semestres (plusieurs) et coefficient
+async function subjectDialog(sb) {
+  const known = [...new Set([...semesters(), ...semsOf(sb)])].sort();
+  const cur = semsOf(sb);
+  const res = await promptDialog({
+    title:'Matière « ' + sb + ' »',
+    text:'Couleur, semestres (autant que tu veux) et coefficient. Aucun semestre coché = la matière reste visible partout.',
+    fields:[
+      {label:'Couleur', value:colorOf(sb), type:'color'},
+      ...known.map(x => ({label:'Semestre ' + x, value:cur.includes(x) ? 'oui' : '', type:'check'})),
+      {label:'Autre(s) semestre(s)', value:'', type:'text'},
+      {label:'Coefficient', value:String(coefOf(sb))}
+    ],
+    ok:'Appliquer', danger:false
+  });
+  if (res === null) return;
+  snapshot();
+  setColor(sb, res[0]);
+  const picked = known.filter((x, i) => res[i + 1] === 'oui');
+  const extra = String(res[known.length + 1] || '').split(/[,;\s]+/).filter(Boolean);
+  setSemsOf(sb, [...picked, ...extra]);
+  const cf = parseFloat(String(res[known.length + 2] || '').replace(',', '.'));
+  if (!isNaN(cf) && cf > 0) { if (!S.set.coefs) S.set.coefs = {}; S.set.coefs[sb] = cf; }
+  save(); render();
+  toast('Matière « ' + sb + ' » : ' + (semsLabel(sb) || 'tous les semestres') + ' · coef ' + coefOf(sb) + '.');
+}
+// couleur d'un QCM : celle de son cours, sinon celle de sa matière// couleur d'un QCM : celle de son cours, sinon celle de sa matière
 function testColor(t) {
   if (!t) return colorOf('');
+  if (t.color) return t.color;   // couleur choisie exprès pour ce QCM
   if (t.scope === 'course') {
     const c = S.courses.find(c => c.id === t.courseId);
     if (c) return c.color || colorOf(c.subject);
@@ -431,7 +550,7 @@ function toggleTask(eid, d) {
 }
 
 // ---------- vues ----------
-const TABS = [['dash','Accueil'],['courses','Cours'],['tests','Tests & QCM'],['stats','Statistiques'],['cal','Calendrier'],['exams','Notes partiels'],['help','Aide']];
+const TABS = [['dash','Accueil'],['courses','Cours'],['tests','Tests & QCM'],['stats','Statistiques'],['recap','Récapitulatif'],['cal','Calendrier'],['exams','Notes partiels'],['help','Aide']];
 let openProf = false;
 function exportBackup() {
   try {
@@ -619,9 +738,6 @@ function harvestForm() {
 }
 // filet de sécurité : une copie de l'état avant chaque action, pour pouvoir revenir en arrière
 let UNDO = null;
-function snapshot() {
-  try { UNDO = JSON.stringify(S); } catch (e) { UNDO = null; }
-}
 function undoLast() {
   if (!UNDO) { toast('Rien à annuler.'); return; }
   try {
@@ -639,17 +755,31 @@ function snapshot() {
   if (cap) {
     const n = $('#p-name'); if (n) draft.pName = n.value;
   }
-  if (form === 'subject') { const n = $('#m-name'); if (n) mName = n.value; }
+  if (form === 'subject') {
+    const n = $('#m-name'); if (n) mName = n.value;
+    const ms = $('#m-sem'); if (ms) draft.mSem = ms.value;
+    const cf = $('#m-coef'); if (cf) draft.mCoef = cf.value;
+  }
   if (form === 'course') {
     for (const [id, k] of [['c-sub','cSub'], ['c-sem','cSem'], ['c-title','cTitle'], ['c-notes','cNotes']]) {
       const el = document.getElementById(id); if (el) draft[k] = el.value;
     }
   }
 }
+function semBar() {
+  const sems = semesters();
+  if (!sems.length) return '';
+  const items = [[SEM_ALL, '🌍 Global'], ...sems.map(x => [x, x])];
+  return `<div class="row" style="gap:6px;margin-bottom:10px">
+    <span class="mut" style="min-width:auto">Afficher :</span>
+    ${items.map(([k, l]) => `<button class="chip ${semView === k ? 'on' : ''}" data-act="semView" data-v="${esc(k)}">${esc(l)}</button>`).join('')}
+    ${semView !== SEM_ALL ? `<span class="mut" style="font-size:12.5px">les matières sans semestre restent visibles</span>` : ''}</div>`;
+}
 function render() {
   const nTasks = tasksFor(today()).filter(t => !isDone(t.id, t.date)).length;
   $('#nav').innerHTML = TABS.map(([k, l]) => `<button class="${view === k ? 'on' : ''}" data-act="view" data-v="${k}">${l}${k === 'dash' && nTasks ? `<span class="n">${nTasks}</span>` : ''}</button>`).join('');
-  $('#app').innerHTML = ({dash, courses, tests, stats, cal:calendar, exams, help, course:courseView, quiz:quizView})[view]();
+  const withBar = !['help', 'cal'].includes(view);
+  $('#app').innerHTML = (withBar ? semBar() : '') + ({dash, courses, tests, stats, cal:calendar, exams, help, course:courseView, quiz:quizView, recap:recapView})[view]();
   if (cap) $('#app').innerHTML += cap;
   paintProf(); paintThemes();
   if (flash) { $('#app').innerHTML = flashHtml(flash) + $('#app').innerHTML; }
@@ -697,8 +827,10 @@ const dot = s => `<span class="dot" style="background:${subjectColor(s)}"></span
 
 
 function dash() {
-  const g = avg(S.tests.flatMap(cur).map(pct)), subs = subjects(), w = weak(S.courses);
-  const rec = [...S.attempts].sort((a, b) => a.date < b.date ? 1 : -1).slice(0, 5);
+  const T0 = semTests(), C0 = semCourses();
+  const ids0 = new Set(T0.map(t => t.id));
+  const g = weightedAvg(T0), subs = subjects(), w = weak(C0);
+  const rec = S.attempts.filter(a => ids0.has(a.testId)).sort((a, b) => a.date < b.date ? 1 : -1).slice(0, 5);
   const d = today();
   const tasks = tasksFor(d), dn = tasks.filter(t => isDone(t.id, t.date)).length;
   const pf = pomo.phase;
@@ -762,7 +894,7 @@ function dash() {
 
 function courses() {
   const subs = subjects(), sems = semesters();
-  const list = S.courses.filter(c => (!filt.sem || c.semester === filt.sem) && (!filt.sub || c.subject === filt.sub));
+  const list = semCourses().filter(c => (!filt.sem || (c.semester || semOf(c.subject)) === filt.sem) && (!filt.sub || c.subject === filt.sub));
   const f = form === 'course' ? `<div class="card"><div class="row">
       <input id="c-sub" class="flex1" placeholder="Matière" list="dl-sub" data-act="subInput" value="${esc(draft.cSub || '')}"><input id="c-sem" class="flex1" placeholder="Semestre (S1…)" list="dl-sem" value="${esc(draft.cSem || '')}"><input id="c-title" class="flex1" placeholder="Titre du cours" value="${esc(draft.cTitle || '')}"></div>
     <div class="row" style="margin-top:10px"><span class="mut" style="min-width:52px">Couleur</span>
@@ -784,6 +916,13 @@ function courses() {
           <span style="font-size:15px">🎨</span></label>
         <span class="row" style="gap:6px;margin-left:6px"><span class="dot" style="background:${newColor};width:12px;height:12px"></span><span class="mut">${esc(mName || 'Aperçu')}</span></span>
       </div>
+      <div class="row" style="margin-top:10px"><span class="mut" style="min-width:52px">Semestre</span>
+        <input id="m-sem" class="flex1" placeholder="Facultatif (ex. S3, S4)" list="dl-sem2" value="${esc(draft.mSem || '')}" style="max-width:180px">
+        <datalist id="dl-sem2">${sems.map(x => `<option value="${esc(x)}">`).join('')}</datalist>
+        <span class="mut">plusieurs possibles, séparés par une virgule · vide = visible partout</span></div>
+      <div class="row" style="margin-top:8px"><span class="mut" style="min-width:52px">Coef</span>
+        <input id="m-coef" type="number" min="0.5" step="0.5" value="${esc(draft.mCoef || '1')}" style="max-width:90px" title="Coefficient de la matière dans la moyenne générale">
+        <span class="mut">poids de la matière dans la moyenne générale</span></div>
       <div class="row" style="margin-top:14px"><button class="btn" data-act="addSubject">Créer la matière</button><button class="btn g" data-act="cancel">Annuler</button></div>
       <div class="mut" style="margin-top:8px">La couleur sert partout : cartes de cours, statistiques, notes, calendrier.</div></div>` : '';
   const gs = {};
@@ -792,15 +931,20 @@ function courses() {
   return `<div class="row sp"><div class="row">
     <select data-act="fsem"><option value="">Tous les semestres</option>${sems.map(s => `<option ${filt.sem === s ? 'selected' : ''}>${esc(s)}</option>`).join('')}</select>
     <select data-act="fsub"><option value="">Toutes les matières</option>${subs.map(s => `<option ${filt.sub === s ? 'selected' : ''}>${esc(s)}</option>`).join('')}</select></div>
-    <span class="row"><button class="btn g" data-act="form" data-v="subject">🎨 Nouvelle matière</button><button class="btn" data-act="form" data-v="course">+ Nouveau cours</button></span></div><div style="height:10px"></div>${fm}${f}
-  ${noCourse.length ? `<div class="card"><div class="mut" style="margin-bottom:6px">Matières créées, sans cours pour l’instant :</div><div class="row">${noCourse.map(s => `<span class="row" style="gap:4px"><button class="chip" data-act="color" data-v="${esc(s)}">${dot(s)} ${esc(s)}</button><button class="x" data-act="delSubject" data-v="${esc(s)}" title="Supprimer la matière">✕</button></span>`).join('')}</div></div>` : ''}
+    <span class="row"><button class="btn g" data-act="form" data-v="subject">🎨 Nouvelle matière</button>
+    <button class="btn g" data-act="form" data-v="course">+ Nouveau cours</button>
+    <button class="btn" data-act="bulkCourses">+ Plusieurs cours</button>
+    <button class="btn g s" data-act="fixSems" title="Aligner les semestres saisis à la main (1 → S1)">🧹 Semestres</button></span></div><div style="height:10px"></div>${fm}${f}
+  ${noCourse.length ? `<div class="card"><div class="mut" style="margin-bottom:6px">Matières créées, sans cours pour l’instant :</div><div class="row">${noCourse.map(s => `<span class="row" style="gap:4px"><button class="chip sub" data-act="color" data-v="${esc(s)}" title="Couleur, semestres et coefficient de cette matière">${dot(s)} ${esc(s)}</button><button class="x" data-act="delSubject" data-v="${esc(s)}" title="Supprimer la matière">✕</button></span>`).join('')}</div></div>` : ''}
   ${Object.keys(gs).sort().map(sem => `<h2>${esc(sem)}</h2>${Object.keys(gs[sem]).sort().map(sb => `
-    <div class="row sp" style="margin:10px 0 6px"><span class="row"><b>${dot(sb)} ${esc(sb)}</b>${rk(subjStats(sb).avg)}</span>
+    <div class="row sp" style="margin:10px 0 6px"><span class="row">
+      <button class="subname" data-act="color" data-v="${esc(sb)}" title="Couleur, semestres et coefficient de cette matière">${dot(sb)} <b>${esc(sb)}</b></button>${rk(subjStats(sb).avg)}</span>
       <button class="btn g s" data-act="delSubject" data-v="${esc(sb)}">🗑 Supprimer la matière</button></div>
     <div class="grid">${gs[sem][sb].map(c => {
       const st = courseStats(c);
       return `<div class="card cc" style="--h:${c.color || subjectColor(sb)}" data-act="openCourse" data-id="${c.id}">
-        <div class="row sp"><h3 style="color:${c.color || colorOf(c.subject)}">${dot(c.subject)} ${esc(c.title)}</h3><button class="x" data-act="delCourse" data-id="${c.id}">✕</button></div>
+        <div class="row sp"><h3 style="color:${c.color || colorOf(c.subject)}">${dot(c.subject)} ${esc(c.title)}</h3>
+          <span class="row" style="gap:2px"><button class="x" data-act="editCourse" data-id="${c.id}" title="Renommer / modifier ce cours">✎</button><button class="x" data-act="delCourse" data-id="${c.id}">✕</button></span></div>
         <div class="mut">${testsOfCourse(c).length} test(s) · ${strip(c.notes).length ? '📄 contenu' : 'vide'}${c.rec && c.rec.on ? ` · 🔁 J${c.rec.days.join('/J')}` : ''}</div>
         <div class="row sp" style="margin-top:6px">${spark(st.ps)}<span>${badgeAvg(st.avg)}</span></div>
         ${c.rec && c.rec.on ? '' : ''}</div>`;
@@ -811,7 +955,9 @@ function courseView() {
   const c = S.courses.find(c => c.id === cid);
   if (!c) { view = 'courses'; return courses(); }
   const col = c.color || subjectColor(c.subject);
-  return `<button class="btn g s" data-act="view" data-v="courses">← Retour</button>
+  return `<div class="row sp"><button class="btn g s" data-act="view" data-v="courses">← Retour</button>
+    <span class="row" style="gap:6px"><button class="btn g s" data-act="editCourse" data-id="${c.id}">✎ Renommer / modifier</button>
+    ${c.colorOwn ? `<button class="btn q s" data-act="resetCourseColor" data-id="${c.id}" title="Revenir à la couleur de la matière">↺ Couleur de la matière</button>` : ''}</span></div>
   <div class="card" style="margin-top:10px;border-left:5px solid ${col}">
     <div class="row sp"><h2 style="margin:0">${esc(c.title)}</h2><span>${dot(c.subject)} <span class="tag">${esc(c.subject)}</span><span class="tag">${esc(c.semester)}</span></span></div>
     <div class="row" style="margin:10px 0 4px">
@@ -840,12 +986,12 @@ function tests() {
     <div class="mut" style="margin-top:4px;font-size:12.5px">Réponses reconnues : <b>Paris ✓</b>, <b>* Paris</b>, <b>(vrai)</b>, <b>[x]</b>, <b>Réponse : b</b>, ou un corrigé à part (<b>Corrigé : 1b 2a</b>). Rien de détecté ? Le corrigé peut être saisi à la main.</div></div>` : '';
   return help + `<div class="row sp"><span class="mut">Tes QCM et tes notes.</span>
     <span class="row"><button class="btn g s" data-act="resetAll">↺ Tout réinitialiser</button><button class="btn g s" data-act="qcmHelp" title="Aide sur l’import">?</button><button class="btn" data-act="form" data-v="test">+ Nouveau test</button></span></div><div style="height:10px"></div>${f}
-  ${S.tests.map(t => {
+  ${semTests().map(t => {
     const c = S.courses.find(c => c.id === t.courseId), at = cur(t), ps = at.map(pct), n = (t.questions || []).length;
     const noAns = (t.questions || []).filter(q => !(q.answer >= 0)).length;
     const tcol = testColor(t);
     return `<div class="card tcard" style="--tc:${tcol};border-left:4px solid ${tcol}"><div class="row sp"><div><b>${dot(t.subject || (c ? c.subject : ''))} ${esc(t.title)}</b><div><span class="tag">${t.scope === 'course' ? 'Cours' : 'Matière'}</span><span class="mut">${esc(t.scope === 'course' ? (c ? c.title : '(cours supprimé)') : t.subject)} · ${n} question(s)${noAns ? ` · <span class="warn">${noAns} sans réponse indiquée</span>` : ''}${rd(t) ? ' · cycle ' + (rd(t) + 1) : ''}</span></div></div>
-      <div class="row">${spark(ps)}${badgeAvg(avg(ps))}<button class="x" data-act="delTest" data-id="${t.id}">✕</button></div></div>
+      <div class="row">${spark(ps)}${badgeAvg(avg(ps))}<button class="x" data-act="editTest" data-id="${t.id}" title="Renommer / modifier ce QCM">✎</button><button class="x" data-act="delTest" data-id="${t.id}">✕</button></div></div>
       <div class="row" style="margin-top:8px">${n ? `<button class="btn s" data-act="quiz" data-id="${t.id}">▶ Répondre</button>
       <button class="btn g s" data-act="quiz" data-id="${t.id}" data-chrono="1" title="Répondre avec chronomètre">▶⏱</button>` : ''}
       <button class="btn g s" data-act="addMenu" data-id="${t.id}">⬆ Importer</button>
@@ -1045,17 +1191,18 @@ function stats() {
   if (!subj) subj = ALL;
   if (subj !== ALL && !subs.includes(subj)) subj = ALL;
   const all = subj === ALL;
-  const ts = all ? S.tests : testsOfSubject(subj);
-  const cs = all ? S.courses : S.courses.filter(c => c.subject === subj);
+  const ts = all ? semTests() : testsOfSubject(subj).filter(t => semTests().includes(t));
+  const cs = all ? semCourses() : semCourses().filter(c => c.subject === subj);
   const st = statsFor(ts), rs = rounds(ts), mm = missed(ts), w = weak(cs);
+  if (all) st.avg = weightedAvg(ts);   // moyenne générale pondérée par les coefficients
   const chips = `<div class="row" style="margin-bottom:10px">
       <button class="chip ${all ? 'on' : ''}" data-act="subj" data-v="${ALL}">📚 Toutes les matières</button>
       ${subs.map(s => `<button class="chip ${s === subj ? 'on' : ''}" data-act="subj" data-v="${esc(s)}">${dot(s)} ${esc(s)}</button>`).join('')}</div>`;
   const perSubject = all ? `<h2>Détail par matière</h2><div class="card scroll"><table class="plain">
-      <tr><th>Matière</th><th>Moyenne</th><th>Résultats</th><th>Tendance</th><th>Cours</th></tr>
+      <tr><th>Matière</th><th>Moyenne</th><th>Coef</th><th>Résultats</th><th>Tendance</th><th>Cours</th></tr>
       ${subs.map(s => {
         const x = subjStats(s);
-        return `<tr><td>${dot(s)} ${esc(s)}</td><td>${f1(x.avg)}</td><td>${x.n}</td>
+        return `<tr><td>${dot(s)} ${esc(s)}</td><td>${f1(x.avg)}</td><td><button class="chip s" data-act="color" data-v="${esc(s)}" title="Couleur, semestres et coefficient">⚖ ${coefOf(s)}</button></td><td>${x.n}</td>
           <td class="${x.trend == null ? 'mut' : x.trend >= 0 ? 'ok' : 'bad'}">${x.trend == null ? '–' : (x.trend >= 0 ? '+' : '') + Math.round(x.trend) + ' pts'}</td>
           <td>${S.courses.filter(c => c.subject === s).length}</td></tr>`;
       }).join('')}</table></div>
@@ -1170,6 +1317,106 @@ function calTitle(mode) {
   return MOIS[cal.m] + ' ' + cal.y;
 }
 
+// ---------- Récapitulatif : un tableau de matières par semestre (ECTS, coef, notes) ----------
+// S.set.recap = { 'S1': { rows:[{id, sub, coef, ects, note, max}], rule:'comp'|'ects', val:10 } }
+const RECAP_DEFAULT = { rule:'comp', val:10 };
+function recapOf(sem) {
+  if (!S.set.recap) S.set.recap = {};
+  const r = S.set.recap[sem];
+  if (!r || !Array.isArray(r.rows)) return null;
+  return r;
+}
+function recapSemList() {
+  const used = Object.keys(S.set.recap || {});
+  const base = [...new Set([...semesters(), ...used])].filter(x => x && x !== SEM_ALL);
+  if (!base.length) base.push('S1');
+  return base.sort();
+}
+function recapEnsure(sem) {
+  if (!S.set.recap) S.set.recap = {};
+  if (!S.set.recap[sem]) {
+    // au premier affichage : les matières du semestre sont déjà là, coef et ECTS restent à toi
+    S.set.recap[sem] = Object.assign({}, RECAP_DEFAULT, {
+      rows: subjects().filter(sb => subInSem(sb, sem)).map(sb => ({id:uid(), sub:sb, coef:'', ects:'', note:'', max:'20'}))
+    });
+  }
+  return S.set.recap[sem];
+}
+const numOf = v => { const n = parseFloat(String(v == null ? '' : v).replace(',', '.')); return isNaN(n) ? null : n; };
+// bilan : moyenne pondérée, ECTS acquis (note >= seuil) et ECTS tentés
+function recapCalc(r) {
+  // coef : celui saisi dans la ligne, sinon celui de la matière (réglages), sinon 1
+  const rows = (r.rows || []).map(x => ({...x, n:numOf(x.note), m:numOf(x.max) || 20,
+    c: numOf(x.coef) || (x.sub ? coefOf(x.sub) : 1) || 1, e:numOf(x.ects) || 0}));
+  const noted = rows.filter(x => x.n != null && x.n >= 0);
+  const cw = noted.reduce((a, x) => a + x.c, 0);
+  const moy = cw ? noted.reduce((a, x) => a + (x.n / x.m * 20) * x.c, 0) / cw : null;
+  const rule = r.rule === 'ects' ? 'ects' : 'comp';
+  const val = numOf(r.val) != null ? numOf(r.val) : 10;
+  const ok = x => rule === 'ects'
+    ? (numOf(x.ects) || 0) >= val
+    : (x.n != null && x.n / x.m * 20 >= val);
+  return {
+    rows, moy, rule, val,
+    ectsTot: rows.reduce((a, x) => a + x.e, 0),
+    ectsOk: rows.filter(ok).reduce((a, x) => a + x.e, 0),
+    ectsLeft: rows.filter(x => !ok(x)).reduce((a, x) => a + x.e, 0),
+    okCount: rows.filter(ok).length, count: rows.length, ok
+  };
+}
+function recapTableHtml(r, c) {
+  const line = (row, i) => {
+    const got = c.ok(c.rows[i]);
+    return `<tr class="${got ? 'rok' : ''}" data-rc-line="${i}">
+      <td><span class="row" style="gap:6px">${dot(row.sub)}<input class="rc-in" data-act="rcRow" data-i="${i}" data-f="sub" value="${esc(row.sub || '')}" placeholder="Matière"></span></td>
+      <td><input class="rc-in" data-act="rcRow" data-i="${i}" data-f="coef" value="${esc(row.coef == null ? '' : row.coef)}" placeholder="1" inputmode="decimal"></td>
+      <td><input class="rc-in" data-act="rcRow" data-i="${i}" data-f="ects" value="${esc(row.ects == null ? '' : row.ects)}" placeholder="—" inputmode="decimal"></td>
+      <td><span class="row" style="gap:3px"><input class="rc-in" data-act="rcRow" data-i="${i}" data-f="note" value="${esc(row.note == null ? '' : row.note)}" placeholder="—" inputmode="decimal"><span class="mut">/</span><input class="rc-in" data-act="rcRow" data-i="${i}" data-f="max" value="${esc(row.max == null ? '' : row.max)}" style="width:34px" placeholder="20" inputmode="decimal"></span></td>
+      <td><button class="x" data-act="rcDel" data-i="${i}" title="Retirer cette ligne">✕</button></td></tr>`;
+  };
+  return `<div class="scroll"><table class="plain recap">
+    <tr><th>Matière</th><th style="width:70px">Coef</th><th style="width:70px">ECTS</th><th style="width:110px">Note</th><th style="width:52px"></th></tr>
+    ${(r.rows || []).map((x, i) => line(x, i)).join('') || `<tr><td colspan="5" class="mut">Aucune ligne. « + Ligne » ou « ⤓ Mes matières ».</td></tr>`}
+  </table></div>`;
+}
+function recapTotHtml(r, c) {
+  const pct = c.ectsTot ? Math.min(100, Math.round(c.ectsOk / c.ectsTot * 100)) : 0;
+  const done = c.ectsTot > 0 && c.ectsOk >= c.ectsTot;
+  return `<div data-rc-tot><div class="row sp" style="margin-top:12px;align-items:flex-end;flex-wrap:wrap;gap:10px">
+      <div><div class="mut">Moyenne du semestre</div><div style="font-size:30px;font-weight:700;line-height:1.1">${c.moy == null ? '–' : c.moy.toFixed(2).replace('.', ',')}<span class="mut" style="font-size:16px"> / 20</span></div></div>
+      <div style="min-width:180px"><div class="mut">ECTS validés</div><div style="font-size:30px;font-weight:700;line-height:1.1">${fmtN(c.ectsOk)}<span class="mut" style="font-size:16px"> / ${fmtN(c.ectsTot)}</span></div></div>
+      <div class="mut">${c.okCount} matière(s) validée(s) sur ${c.count}${c.ectsLeft ? ' · ' + fmtN(c.ectsLeft) + ' ECTS à rattraper' : ''}</div>
+    </div>
+    <div class="bar" style="margin-top:10px"><i style="width:${pct}%;background:${done ? 'var(--ok)' : 'var(--ac)'}"></i></div></div>`;
+}
+function recapView() {
+  const sems = recapSemList();
+  if (!sems.includes(rSem)) rSem = sems[0];
+  const r = recapEnsure(rSem), c = recapCalc(r);
+  const opt = sems.map(x => `<option value="${esc(x)}"${x === rSem ? ' selected' : ''}>${esc(x)}</option>`).join('');
+  const val = k => { const v = r[k]; return v == null ? '' : String(v); };
+  return `<div class="card"><div class="row sp" style="flex-wrap:wrap;gap:8px">
+      <span class="row" style="gap:8px"><b>Semestre</b><select class="rc-sem" data-act="rcSem">${opt}</select>
+      <button class="btn g s" data-act="rcAddSem" title="Créer un tableau pour un autre semestre">+ Semestre</button></span>
+      <span class="row" style="gap:6px"><button class="btn s" data-act="rcPrefill" title="Ajouter les matières de ce semestre qui manquent">⤓ Mes matières</button>
+      <button class="btn g s" data-act="rcAdd">+ Ligne</button></span></div>
+    <div class="mut" style="margin-top:6px">Renseigne coefficient (facultatif : celui de la matière s’il existe, sinon 1), ECTS et note. Tout est calculé aussitôt.</div></div>
+
+  <div class="card" style="margin-top:12px" data-rc-body>${recapTableHtml(r, c)}${recapTotHtml(r, c)}</div>
+
+  <div class="card" style="margin-top:12px">
+    <div class="row sp" style="flex-wrap:wrap;gap:10px">
+      <span class="mut">On valide une matière si</span>
+      <span class="row" style="gap:6px">
+        <select class="rc-sem" data-act="rcRule">
+          <option value="comp"${val('rule') === 'comp' ? ' selected' : ''}>note ≥ seuil</option>
+          <option value="ects"${val('rule') === 'ects' ? ' selected' : ''}>ECTS de la matière ≥ seuil</option>
+        </select>
+        <input class="rc-in" data-act="rcVal" value="${esc(val('val') || '10')}" style="width:56px" inputmode="decimal" title="Seuil">
+      </span></div>
+  </div>`;
+}
+const fmtN = n => (Math.round((n || 0) * 100) / 100).toString().replace('.', ',');
 function exams() {
   const sems = semesters();
   if (!sems.includes(sSem)) sSem = sems[0] || '';
@@ -1178,7 +1425,7 @@ function exams() {
   const e20 = e => e.grade / e.max * 20;
   const wavg = l => { const c = l.reduce((s, e) => s + e.coef, 0); return c ? l.reduce((s, e) => s + e20(e) * e.coef, 0) / c : null; };
   const bySem = sems.map(s => ({s, l:S.exams.filter(e => e.semester === s)})), cmp = bySem.map(x => ({...x, a:wavg(x.l)}));
-  const cur_ = S.exams.filter(e => e.semester === sSem).sort((a, b) => e20(b) - e20(a));
+  const cur_ = semExams().filter(e => e.semester === sSem).sort((a, b) => e20(b) - e20(a));
   const sb = subjects().filter(s => S.exams.some(e => e.subject === s)).map(s => {
     const l = S.exams.filter(e => e.subject === s), q = subjStats(s).avg;
     return {s, a:avg(l.map(e => e20(e) / 20 * 100)), q};
@@ -1793,6 +2040,8 @@ function promptDialog(opts) {
         ? `<label class="row" style="gap:6px;align-items:center"><input type="color" id="pf-${i}" value="${esc(f.value || '#2f5fd0')}" style="width:46px;height:34px;padding:2px;cursor:pointer"><span class="mut">${esc(f.label)}</span></label>`
         : f.type === 'select'
         ? `<select id="pf-${i}" class="flex1"${f.act ? ' data-act="' + esc(f.act) + '"' : ''}>${(f.options || []).map(o => `<option value="${esc(o[0])}"${String(o[0]) === String(f.value || '') ? ' selected' : ''}>${esc(o[1])}</option>`).join('')}</select>`
+        : f.type === 'check'
+        ? `<label class="row" style="gap:8px;align-items:center;cursor:pointer;padding:5px 0"><input type="checkbox" id="pf-${i}" value="oui"${String(f.value) === 'oui' ? ' checked' : ''} style="width:18px;height:18px"><span>${esc(f.label)}</span></label>`
         : f.type === 'text'
         ? `<textarea id="pf-${i}" class="flex1" rows="${f.rows || 10}" placeholder="${esc(f.label)}">${esc(f.value || '')}</textarea>`
         : `<input id="pf-${i}" class="flex1" value="${esc(f.value || '')}" placeholder="${esc(f.label)}" ${f.type === 'date' ? 'type="date"' : ''}>`).join('')}</div>
@@ -1803,7 +2052,11 @@ function promptDialog(opts) {
       if (e.target === back) return done(null);
       const b = e.target.closest('[data-r]'); if (!b) return;
       if (b.dataset.r === '0') return done(null);
-      done(flds.map((f, i) => ($('#pf-' + i) ? $('#pf-' + i).value : f.value)));
+      done(flds.map((f, i) => {
+        const el = $('#pf-' + i);
+        if (!el) return f.value;
+        return f.type === 'check' ? (el.checked ? 'oui' : '') : el.value;
+      }));
     });
     document.addEventListener('keydown', key);
     // listes liées : la 2e liste de champs dépend de la valeur du 1er
@@ -1821,6 +2074,17 @@ function promptDialog(opts) {
 }
 
 // ---------- actions ----------
+// garde-fou : une couche invisible restée dans le DOM (pause, lecteur PDF) ne doit pas bloquer les clics
+function dropStaleLayers() {
+  if (typeof pomo === 'undefined' || !pomo || pomo.phase !== 'break') { const o = $('#break-overlay'); if (o) o.remove(); }
+  if (!openPdf) { const r = $('#pdf-reader'); if (r) r.remove(); }
+  document.querySelectorAll('.backdrop').forEach(b => {
+    // une fenêtre modale ouverte garde toujours un bouton : sans bouton, c'est un reste
+    if (b.isConnected && !b.querySelector('button')) b.remove();
+  });
+}
+document.addEventListener('pointerdown', () => dropStaleLayers(), true);
+
 document.addEventListener('click', async e => {
   // clic en dehors des panneaux : on les referme
   if (openThemes && !e.target.closest('#theme-wrap')) { openThemes = false; paintThemes(); }
@@ -1830,11 +2094,13 @@ document.addEventListener('click', async e => {
     const sb = e.target.closest('[data-act="pomoStop"], [data-act="pomoResume"], [data-act="pomoSkip"], [data-act="pomoOpen"]');
     if (!sb) { e.preventDefault(); e.stopPropagation(); return; }
   }
+  // un clic dans un champ de saisie : on laisse le navigateur placer le curseur, sans rien redessiner
+  if (e.target.closest('input, textarea, select') && !e.target.closest('.tmenu')) return;
   const b = e.target.closest('[data-act]');
   if (typeof testMenu !== 'undefined' && testMenu && !e.target.closest('.tmenu') && !(b && ['addMenu', 'moreMenu'].includes(b.dataset.act))) {
     testMenu = null; render();
   }
-  if (!b || ['SELECT', 'INPUT', 'TEXTAREA'].includes(b.tagName)) return;
+  if (!b) return;
   if (typeof handleAct === 'function') await handleAct(b, e);
 });
 
@@ -1843,7 +2109,47 @@ document.addEventListener('input', e => {
   if (a === 'mName') { mName = t.value; const p = $('#m-prev'); if (p) p.textContent = t.value || 'Aperçu'; }
   else if (a === 'customColor') { newColor = t.value; const p = $('#m-prev'); if (p) p.style.background = t.value; }
   else if (a === 'customCourseColor') courseColor = t.value;
+  else if (a === 'rcRow') {
+    // saisie directe : on écrit la valeur et on recalcule les totaux, sans toucher aux champs
+    const r = recapEnsure(rSem), i = +t.dataset.i, f = t.dataset.f;
+    if (!r.rows[i]) return;
+    r.rows[i][f] = t.value;
+    if (f === 'sub') { const p = t.previousElementSibling; if (p && p.classList.contains('dt')) p.style.background = t.value ? colorOf(t.value) : 'var(--bd)'; }
+    save(); recapRefresh();
+  }
+  else if (a === 'rcVal') {
+    const r = recapEnsure(rSem); r.val = t.value; save(); recapRefresh();
+  }
 });
+// copie l'état des champs du tableau dans les données (avant tout redessin)
+function recapHarvest() {
+  if (view !== 'recap') return;
+  const r = recapEnsure(rSem);
+  document.querySelectorAll('[data-act="rcRow"]').forEach(el => {
+    const i = +el.dataset.i, f = el.dataset.f;
+    if (r.rows[i]) r.rows[i][f] = el.value;
+  });
+  const v = document.querySelector('[data-act="rcVal"]');
+  if (v) r.val = v.value;
+}
+// redessine le seul tableau + les totaux : le sélecteur de semestre garde son état
+function recapRedraw() {
+  const host = document.querySelector('[data-rc-body]');
+  if (!host || view !== 'recap') { render(); return; }
+  const r = recapEnsure(rSem), c = recapCalc(r);
+  host.innerHTML = recapTableHtml(r, c) + recapTotHtml(r, c);
+}
+// met à jour les totaux sans toucher aux champs (le curseur reste où il est)
+function recapRefresh() {
+  const r = recapEnsure(rSem), c = recapCalc(r);
+  const host = document.querySelector('[data-rc-tot]');
+  if (!host) { render(); return; }
+  host.outerHTML = recapTotHtml(r, c);
+  (r.rows || []).forEach((x, i) => {
+    const tr = document.querySelector('[data-rc-line="' + i + '"]');
+    if (tr) tr.classList.toggle('rok', c.ok(c.rows[i]));
+  });
+}
 
 document.addEventListener('input', e => {
   const id = e.target.id;
@@ -1896,7 +2202,14 @@ document.addEventListener('change', async e => {
     return;
   }
   if (a === 'task') { toggleTask(t.dataset.id, t.dataset.d); return; }
-  if (a === 'subInput') { draft.cSub = t.value; if (!courseColor) { const inp = $('#c-color'); if (inp) inp.value = colorOf(t.value.trim()); } return; }
+  if (a === 'subInput') {
+    draft.cSub = t.value;
+    if (!courseColor) { const inp = $('#c-color'); if (inp) inp.value = colorOf(t.value.trim()); }
+    // le semestre de la matière est repris automatiquement (modifiable)
+    const sm = semOf(t.value.trim()), el = $('#c-sem');
+    if (sm && el) { el.value = sm; draft.cSem = sm; }
+    return;
+  }
   if (a === 'fsem') { filt.sem = t.value; render(); }
   else if (a === 'fsub') { filt.sub = t.value; render(); }
   else if (a === 'scope') { const c = t.value === 'course'; $('#t-course').style.display = c ? '' : 'none'; $('#t-subject').style.display = c ? 'none' : ''; }
@@ -2031,7 +2344,9 @@ async function handleAct(b, e) {
   // copie de secours AVANT l'action (sauf navigation : on veut annuler un réglage, pas un changement d'onglet)
   const NO_SNAP = ['pick', 'pickQcm', 'pickColor', 'pickCourseColor', 'addSubject', 'addCourse', 'cancel', 'form',
     'view', 'openCourse', 'openItem', 'toggle', 'task', 'profMenu', 'themeOpen', 'themeClose', 'qcmHelp',
-    'addMenu', 'moreMenu', 'undoLast', 'installApp', 'installNo', 'readPdf', 'readPdfClose', 'sSem', 'fsem', 'fsub'];
+    'addMenu', 'moreMenu', 'undoLast', 'installApp', 'installNo', 'readPdf', 'readPdfClose', 'sSem', 'fsem', 'fsub',
+    'semView', 'subj', 'scope', 'editCourse', 'editTest', 'resetCourseColor', 'addCourses', 'coefSubject', 'subjectSems', 'fixSems',
+    'rcSem', 'rcRule', 'rcRow', 'rcVal'];
   // les actions qui ouvrent une fenêtre prennent leur copie juste avant d'appliquer le réglage
   const DIALOG_ACTS = ['itemRec', 'recEdit', 'editAttempt', 'editNotes', 'relinkTest', 'recPreset', 'recToggle'];
   if (!NO_SNAP.includes(a) && !DIALOG_ACTS.includes(a)) snapshot();
@@ -2078,6 +2393,7 @@ async function handleAct(b, e) {
     await recDialog(b.dataset.kind, id);
   }
   else if (a === 'undoLast') { undoLast(); return; }
+  else if (a === 'semView') { semView = v; render(); }
   else if (a === 'openItem') { cid = id; view = 'course'; }
   else if (a === 'pickColor') { newColor = v; const inp = $('#m-color'); if (inp) inp.value = v; }
   else if (a === 'pickCourseColor') { harvestForm(); courseColor = v; draft.cColor = v; const inp = $('#c-color'); if (inp) inp.value = v; }
@@ -2087,8 +2403,174 @@ async function handleAct(b, e) {
     if (!name) { toast('Donne un nom à la matière.'); return; }
     if (subjects().some(s => s.toLowerCase() === name.toLowerCase())) { toast('Cette matière existe déjà.'); return; }
     if (!S.set.colors) S.set.colors = {};
-    S.set.colors[name] = newColor; form = null; mName = ''; save(); toast('Matière « ' + name + ' » créée.');
+    S.set.colors[name] = newColor;
+    const ms = (($('#m-sem') || {}).value || '').split(/[,;\s]+/).filter(Boolean);
+    setSemsOf(name, ms);
+    setCoefOf(name, ($('#m-coef') || {}).value || 1);
+    form = null; mName = ''; draft = {}; save();
+    toast('Matière « ' + name + ' » créée' + (ms.length ? ' (' + ms.join(' · ') + ')' : '') + ' · coef ' + coefOf(name) + '.');
     view = 'courses';
+  }
+  else if (a === 'bulkCourses') {
+    const subs = subjects();
+    const r = await promptDialog({
+      title:'Ajouter plusieurs cours',
+      text:'Un cours par ligne. Tu peux préciser la matière et le semestre après une barre verticale : « Titre | Matière | Semestre ». Sans matière, le cours va dans la matière choisie ci-dessous.',
+      fields:[
+        {label:'Matière', value:'', type:'select', options:[['', '— Aucune (à préciser par ligne) —'], ...subs.map(x => [x, x])]},
+        {label:'Semestre', value:semView !== SEM_ALL ? semView : '', type:'select', options:[['', '— Aucun —'], ...semesters().map(x => [x, x])]},
+        {label:'Les cours (un par ligne)', value:'', type:'text', rows:8}
+      ],
+      ok:'Créer les cours', danger:false
+    });
+    if (r === null) return;
+    const defSub = (r[0] || '').trim(), defSem = (r[1] || '').trim();
+    const lines = String(r[2] || '').split(/\r?\n/).map(x => x.trim()).filter(Boolean);
+    if (!lines.length) { toast('Aucun titre de cours indiqué.'); return; }
+    snapshot();
+    const rec = nextRec();
+    let made = 0, skipped = [];
+    for (const line of lines) {
+      const parts = line.split('|').map(x => x.trim());
+      const title = parts[0];
+      if (!title) continue;
+      const subject = parts[1] || defSub;
+      const semester = parts[2] || defSem || semOf(subject) || '';
+      if (!subject) { skipped.push({title, done:false}); continue; }
+      // doublon dans la même matière : on saute au lieu de créer deux fois
+      if (S.courses.some(c => c.subject === subject && c.title.toLowerCase() === title.toLowerCase())) { skipped.push({title, done:true}); continue; }
+      const course = {
+        id:uid(), title, subject, semester, notes:'',
+        color:colorOf(subject), createdAt:today(), rec:{on:rec.on, days:rec.days.slice()}
+      };
+      S.courses.push(course);
+      if (S.set.autoEvents !== false) scheduleFor({...course, kind:'course'});
+      made++;
+    }
+    draftRec = null; save(); render();
+    const noSub = skipped.filter(x => !x.done);
+    toast(made + ' cours créé(s).' + (skipped.length
+      ? ' Non créé(s) : ' + skipped.map(x => x.title).join(', ')
+        + (noSub.length ? ' — indique une matière dans le premier champ (ou après « | »).' : ' — ils existent déjà.')
+      : ''));
+  }
+  else if (a === 'rcSem') {
+    recapHarvest();                       // la saisie du tableau en cours ne doit pas être perdue
+    rSem = e.target.value || rSem; recapEnsure(rSem); save(); recapRedraw(); return;
+  }
+  else if (a === 'rcRule') {
+    recapHarvest();
+    const r = recapEnsure(rSem); r.rule = e.target.value === 'ects' ? 'ects' : 'comp'; save(); recapRedraw(); return;
+  }
+  else if (a === 'rcAdd') {
+    recapHarvest();
+    const r = recapEnsure(rSem); r.rows.push({id:uid(), sub:'', coef:'', ects:'', note:'', max:'20'}); save(); render();
+  }
+  else if (a === 'rcDel') {
+    recapHarvest();
+    const r = recapEnsure(rSem), i = +e.target.dataset.i;
+    const row = r.rows[i];
+    if (!row) return;
+    if (row.sub && !await confirmDialog({title:'Retirer la ligne ?', text:row.sub + ' sera retirée du récapitulatif de ' + rSem + '. Les cours et notes de cette matière ne changent pas.', ok:'Retirer'})) return;
+    snapshot(); r.rows.splice(i, 1); save(); render();
+  }
+  else if (a === 'rcPrefill') {
+    recapHarvest();
+    const r = recapEnsure(rSem);
+    const have = new Set(r.rows.map(x => (x.sub || '').toLowerCase()));
+    const add = subjects().filter(sb => subInSem(sb, rSem) && !have.has(sb.toLowerCase()));
+    if (!add.length) { toast('Toutes les matières de ' + rSem + ' sont déjà dans le tableau.'); return; }
+    snapshot();
+    add.forEach(sb => r.rows.push({id:uid(), sub:sb, coef:'', ects:'', note:'', max:'20'}));
+    save(); render();
+    toast(add.length + ' matière(s) ajoutée(s).');
+  }
+  else if (a === 'rcAddSem') {
+    recapHarvest();
+    const cur = recapSemList();
+    const res = await promptDialog({title:'Nouveau tableau de semestre', text:'Le semestre tel qu’il s’affiche (ex. S3).', fields:[{label:'Semestre', value:''}], ok:'Créer'});
+    if (res === null) return;
+    const sem = normSem(res[0]);
+    if (!sem) return;
+    snapshot();
+    if (!S.set.recap) S.set.recap = {};
+    if (!S.set.recap[sem]) S.set.recap[sem] = Object.assign({}, RECAP_DEFAULT, {rows:subjects().filter(sb => subInSem(sb, sem)).map(sb => ({id:uid(), sub:sb, coef:'', ects:'', note:'', max:'20'}))});
+    rSem = sem; save(); render();
+    toast('Tableau ' + sem + ' prêt.');
+  }
+  else if (a === 'fixSems') {
+    // recense ce qui sera corrigé avant de toucher aux données
+    const changes = [];
+    const seen = new Set();
+    const note = (kind, label, from, to) => {
+      const k = kind + '|' + label + '|' + from + '|' + to;
+      if (seen.has(k) || from === to) return;
+      seen.add(k); changes.push({kind, label, from, to});
+    };
+    const raw = x => String(x == null ? '' : x).trim();   // valeur telle qu'enregistrée
+    S.courses.forEach(c => note('Cours', c.title, raw(c.semester), normSem(c.semester)));
+    S.exams.forEach(e => note('Note', (e.subject || '') + ' ' + (e.grade != null ? e.grade + '/' + e.max : ''), raw(e.semester), normSem(e.semester)));
+    Object.entries(S.set.semOf || {}).forEach(([sb, v]) => {
+      const l = (Array.isArray(v) ? v : [v]).map(raw);
+      const n = [...new Set(l.map(normSem).filter(Boolean))].sort();
+      if (l.join(',') !== n.join(',')) changes.push({kind:'Matière', label:sb, from:l.join(' · '), to:n.join(' · ') || '—'});
+    });
+    // cours sans semestre : on leur donne celui de leur matière (s'il est unique)
+    S.courses.forEach(c => {
+      if (c.semester) return;
+      const l = semsOf(c.subject);
+      if (l.length === 1) changes.push({kind:'Cours', label:c.title, from:'aucun', to:l[0]});
+    });
+    if (!changes.length) { toast('Tous les semestres sont déjà propres : rien à corriger.'); return; }
+    const list = changes.slice(0, 12).map(x => `• ${x.kind} « ${x.label} » : ${x.from || '—'} → ${x.to}`).join('\n')
+      + (changes.length > 12 ? `\n… et ${changes.length - 12} autre(s)` : '');
+    if (!await confirmDialog({title:'Aligner les semestres ?', text:list, ok:'Tout corriger', danger:false})) return;
+    snapshot();
+    S.courses.forEach(c => { c.semester = normSem(c.semester); });
+    S.courses.forEach(c => { if (!c.semester) { const l = semsOf(c.subject); if (l.length === 1) c.semester = l[0]; } });
+    S.exams.forEach(e => { e.semester = normSem(e.semester); });
+    Object.keys(S.set.semOf || {}).forEach(sb => setSemsOf(sb, (Array.isArray(S.set.semOf[sb]) ? S.set.semOf[sb] : [S.set.semOf[sb]])));
+    if (filt.sem) filt.sem = normSem(filt.sem);
+    if (semView !== SEM_ALL) semView = normSem(semView);
+    save(); render();
+    toast(changes.length + ' semestre(s) corrigé(s).');
+  }
+  else if (a === 'editCourse') {
+    const c = S.courses.find(x => x.id === id);
+    if (!c) return;
+    const subs = subjects();
+    const r = await promptDialog({
+      title:'Modifier le cours',
+      text:'Titre, matière, semestre, couleur et récurrence. Laisse la couleur vide pour garder celle de la matière.',
+      fields:[
+        {label:'Titre', value:c.title},
+        {label:'Matière', value:c.subject, type:'select', options:subs.map(x => [x, x]).concat(subs.includes(c.subject) ? [] : [[c.subject, c.subject]])},
+        {label:'Semestre', value:c.semester || '', type:'select', options:[['', '— Aucun —'], ...semesters().map(x => [x, x])]},
+        {label:'Couleur du cours', value:c.color || colorOf(c.subject), type:'color'},
+      {label:'Utiliser la couleur de la matière', value:c.colorOwn ? '' : 'oui', type:'check'}
+      ],
+      ok:'Enregistrer', danger:false
+    });
+    if (r === null) return;
+    snapshot();
+    const t = (r[0] || '').trim(); if (!t) { toast('Le titre ne peut pas être vide.'); return; }
+    c.title = t;
+    if (r[1]) c.subject = r[1];
+    c.semester = r[2] || '';
+    // case cochée = couleur de la matière ; sinon la couleur choisie
+    if (r[4] === 'oui') { delete c.color; delete c.colorOwn; }
+    else if (r[3]) { c.color = r[3]; c.colorOwn = true; }
+    // les QCM liés à ce cours suivent son renommage dans l'agenda
+    removeSchedule('course', c.id);
+    if (S.set.autoEvents !== false) scheduleFor({...c, kind:'course'});
+    save(); render(); toast('Cours modifié.');
+  }
+  else if (a === 'resetCourseColor') {
+    const c = S.courses.find(x => x.id === id);
+    if (!c) return;
+    snapshot();
+    delete c.color; delete c.colorOwn;
+    save(); render(); toast('Le cours reprend la couleur de sa matière.');
   }
   else if (a === 'addCourse') {
     harvestForm();
@@ -2245,6 +2727,7 @@ async function handleAct(b, e) {
     S.exams = S.exams.filter(x => x.subject !== sb);
     S.events = S.events.filter(ev => ev.subject !== sb);
     if (S.set.colors) delete S.set.colors[sb];
+    if (S.set.semOf) delete S.set.semOf[sb];
     if (filt.sub === sb) filt.sub = '';
     save(); render(); toast('Matière supprimée.');
   }
@@ -2270,6 +2753,43 @@ async function handleAct(b, e) {
     S.tests.push(t);
     if (S.set.autoEvents !== false) scheduleFor({...t, kind:'test'});
     form = null; draftRec = null; save();
+  }
+  else if (a === 'editTest') {
+    const t = S.tests.find(x => x.id === id);
+    if (!t) return;
+    const subs = subjects();
+    const courses = S.courses;
+    const curCourse = t.courseId ? courses.find(c => c.id === t.courseId) : null;
+    const r = await promptDialog({
+      title:'Modifier le QCM',
+      text:'Titre, rattachement (matière ou cours) et couleur. Vide = couleur du cours ou de la matière.',
+      fields:[
+        {label:'Titre', value:t.title},
+        {label:'Rattachement', value:t.scope === 'course' ? 'course' : 'subject', type:'select', options:[['subject', 'Toute une matière'], ['course', 'Un cours précis']]},
+        {label:'Matière', value:t.subject || '', type:'select', options:[['', '— Aucune —'], ...subs.map(x => [x, x])]},
+        {label:'Cours', value:t.courseId || '', type:'select', options:[['', '— Aucun cours —'], ...courses.map(c => [c.id, c.subject + ' – ' + c.title])]},
+        {label:'Couleur du QCM', value:testColor(t), type:'color'}
+      ],
+      ok:'Enregistrer', danger:false
+    });
+    if (r === null) return;
+    snapshot();
+    const title = (r[0] || '').trim(); if (!title) { toast('Le titre ne peut pas être vide.'); return; }
+    t.title = title;
+    t.scope = r[1] === 'course' ? 'course' : 'subject';
+    if (t.scope === 'course') {
+      const c = S.courses.find(c => c.id === r[3]);
+      if (!c) { toast('Choisis le cours auquel rattacher ce QCM.'); return; }
+      t.courseId = c.id; t.subject = c.subject;
+    } else {
+      t.courseId = null;
+      if (r[2]) t.subject = r[2];
+    }
+    // couleur : propre au QCM seulement si elle diffère de celle du cours / de la matière
+    const base = testColor(t);
+    if (r[4] && r[4].toLowerCase() !== base.toLowerCase()) { t.color = r[4]; t.colorOwn = true; }
+    else { delete t.color; delete t.colorOwn; }
+    save(); render(); toast('QCM modifié.');
   }
   else if (a === 'delTest') {
     const t = S.tests.find(t => t.id === id);
@@ -2440,9 +2960,12 @@ async function handleAct(b, e) {
     if (!await confirmDialog({title:'Êtes-vous sûr de vouloir supprimer cette note ?', text:x ? `${x.subject} : ${x.grade}/${x.max}` : ''})) return;
     S.exams = S.exams.filter(x => x.id !== id); save();
   }
+  else if (a === 'subjectSem') {
+    await subjectDialog(v);
+  }
   else if (a === 'color') {
-    const r = await promptDialog({title:'Couleur de la matière « ' + v + ' »', text:'Choisis une couleur : elle sera utilisée partout dans l’application.', fields:[{label:'Couleur', value:colorOf(v), type:'color'}], ok:'Appliquer', danger:false});
-    if (r) setColor(v, r[0]);
+    // un seul endroit pour tout régler : couleur, semestres (plusieurs) et coefficient
+    await subjectDialog(v);
     return;
   }
   else if (a === 'readPdf') { openPdf = id; render(); return; }

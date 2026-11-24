@@ -431,3 +431,27 @@ span.btn:focus-visible{outline:2px solid var(--ac);outline-offset:2px}
 
 /* carte de QCM : rappel de la couleur du cours / de la matière */
 .tcard .tag{background:color-mix(in srgb, var(--tc, var(--acc)) 14%, transparent);color:var(--tc, var(--acc));border-color:color-mix(in srgb, var(--tc, var(--acc)) 30%, transparent)}
+
+/* le nom de la matière est lui-même le bouton de réglage */
+button.subname{display:inline-flex;align-items:center;gap:7px;background:none;border:none;padding:2px 4px;margin:0;
+  border-radius:8px;cursor:pointer;color:inherit;font:inherit;transition:background .12s}
+button.subname:hover{background:color-mix(in srgb, var(--acc) 10%, transparent)}
+button.chip.sub{cursor:pointer}
+
+/* ---------- récapitulatif : tableau des matières par semestre ---------- */
+table.recap td{padding:4px 6px;vertical-align:middle}
+table.recap tr.rok td:first-child{box-shadow:inset 3px 0 0 var(--ok)}
+input.rc-in{background:transparent;border:1px solid transparent;border-radius:7px;padding:5px 7px;color:inherit;
+  font:inherit;font-size:14px;width:100%;min-width:0;transition:border-color .12s,background .12s}
+input.rc-in:hover{border-color:var(--bd)}
+input.rc-in:focus{outline:none;border-color:var(--ac);background:color-mix(in srgb,var(--ac) 6%,transparent)}
+select.rc-sem{background:var(--card);color:inherit;border:1px solid var(--bd);border-radius:9px;padding:6px 8px;font:inherit;font-size:14px}
+@media (max-width:520px){
+  table.recap th{font-size:12px}
+  table.recap td,table.recap th{padding:3px 4px}
+  input.rc-in{font-size:13px;padding:4px 4px}
+}
+
+/* clic dans un champ : le navigateur place le curseur tout de suite (pas d'attente d'appui long) */
+input,textarea,select{touch-action:manipulation;-webkit-user-select:text;user-select:text}
+input.rc-in,select.rc-sem{-webkit-tap-highlight-color:transparent}
