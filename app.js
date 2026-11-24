@@ -355,6 +355,51 @@ function scheduleFor(item) {
 function removeSchedule(kind, id) {
   S.events = S.events.filter(e => !(e.autoKey && e.itemId === id && e.kind === kind));
 }
+// fenêtre unique de réglage de la récurrence d'un cours ou d'un QCM
+async function recDialog(kind, id) {
+  const item = kind === 'course' ? S.courses.find(x => x.id === id) : S.tests.find(x => x.id === id);
+  if (!item) return;
+  const r = item.rec || {on:false, days:[1, 3, 7, 30]};
+  const base = item.createdAt || today();
+  const presets = PRESETS.map(([n, d]) => `${n} (J${d.join('/J')})`).join(' · ');
+  const res = await promptDialog({
+    title:'Récurrence de « ' + item.title + ' »',
+    text:`Créé le ${fmt(base)}. Indique les jours de révision après cette date, séparés par des virgules.`
+      + ` Rythmes proposés : ${presets}. Laisse vide pour désactiver les rappels automatiques.`,
+    fields:[
+      {label:'Jours (ex. 1,3,7,30)', value:r.on ? r.days.join(', ') : ''},
+      {label:'Rythme prédéfini', type:'select', value:'keep', options:[
+        ['keep', '— garder les jours saisis —'],
+        ...PRESETS.map(([n, d]) => [d.join(','), n + ' · J' + d.join('/J')]),
+        ['none', '— aucune révision —']
+      ]}
+    ],
+    ok:'Mettre à jour', danger:false
+  });
+  if (res === null) return;
+  // (la copie de secours a déjà été prise à l'ouverture de la fenêtre)
+  // la liste déroulante, si elle est utilisée, remplace les jours saisis
+  const choice = String(res[1] || 'keep').trim();
+  let days = choice && choice !== 'keep' && choice !== 'none'
+    ? choice.split(/[,;\s]+/).map(x => parseInt(x, 10)).filter(n => n > 0 && n < 400)
+    : (res[0] || '').split(/[,;\s]+/).map(x => parseInt(x, 10)).filter(n => n > 0 && n < 400);
+  if (choice === 'none') days = [];
+  item.rec = {on:days.length > 0, days:[...new Set(days)].sort((a, b) => a - b)};
+  if (!item.createdAt) item.createdAt = today();
+  removeSchedule(kind, id);
+  scheduleFor({...item, kind});
+  save(); render();
+  toast(days.length ? 'Révisions mises à jour : J' + item.rec.days.join(' / J') + '.' : 'Révisions automatiques désactivées pour cet élément.');
+}
+// couleur d'un QCM : celle de son cours, sinon celle de sa matière
+function testColor(t) {
+  if (!t) return colorOf('');
+  if (t.scope === 'course') {
+    const c = S.courses.find(c => c.id === t.courseId);
+    if (c) return c.color || colorOf(c.subject);
+  }
+  return colorOf(t.subject || '');
+}
 function itemRecHtml(kind, item) {
   const r = item.rec || {on:false, days:[]};
   const c = item.createdAt ? fmt(item.createdAt) : '–';
@@ -420,7 +465,8 @@ function profPanel() {
     <div class="mut" style="margin-top:8px">Nom et photo restent sur cet appareil.</div>
     <hr style="border:none;border-top:1px solid var(--bd);margin:12px 0">
     <div class="row" style="gap:6px;flex-wrap:wrap"><button class="btn s" data-act="bkSave">💾 Sauvegarder</button>
-      <button class="btn g s" data-act="bkRestore">⬆ Restaurer</button></div>
+      <button class="btn g s" data-act="bkRestore">⬆ Restaurer</button>
+      <button class="btn q s" data-act="undoLast" title="Revenir à l’état d’avant la dernière action">↶ Annuler le dernier réglage</button></div>
     <div class="mut" style="margin-top:8px">${bkHandle ? 'Fichier lié : ' + esc(bkHandle.name) : (FS_OK() ? 'Un seul choix de fichier au premier clic, ensuite la sauvegarde réécrit ce même fichier sans aucune fenêtre.' : 'Ce navigateur ne permet pas l’écriture directe : la sauvegarde va dans « Téléchargements ».')}</div>
     <div class="mut" style="margin-top:6px">${bkAge()} · ${Math.round(JSON.stringify(S).length / 1024)} Ko · ${S.courses.length} cours · ${S.tests.length} QCM</div>
   </div>`;
@@ -508,6 +554,7 @@ function bkPickFile() {
   inp.click();
 }
 async function bkRestore() {
+  snapshot();                        // la restauration doit rester annulable
   openProf = false; paintProf();     // on referme le panneau : il masquait la fenêtre
   setTimeout(bkPickFile, 80);
 }
@@ -550,6 +597,42 @@ function paintProf() {
   const old = $('#prof-pop'); if (old) old.remove();
   const wrap = $('#prof-wrap');
   if (openProf && wrap) wrap.insertAdjacentHTML('beforeend', profPanel());
+}
+// lit ce qui est tapé dans le formulaire ouvert (cours / test) AVANT de redessiner,
+// sinon la saisie et la couleur choisie seraient perdues
+function harvestForm() {
+  if (form === 'course') {
+    const g = id => { const el = document.getElementById(id); return el ? el.value : undefined; };
+    const t = g('c-title'), sub = g('c-sub'), sem = g('c-sem'), notes = g('c-notes');
+    if (t !== undefined) draft.cTitle = t;
+    if (sub !== undefined) { draft.cSub = sub; if (!courseColor) draft.cColor = colorOf(sub.trim()); }
+    if (sem !== undefined) draft.cSem = sem;
+    if (notes !== undefined) draft.cNotes = notes;
+  } else if (form === 'test') {
+    const g = id => { const el = document.getElementById(id); return el ? el.value : undefined; };
+    const t = g('t-title'), sc = g('t-scope'), co = g('t-course'), su = g('t-subject');
+    if (t !== undefined) draft.tTitle = t;
+    if (sc !== undefined) draft.tScope = sc;
+    if (co !== undefined) draft.tCourse = co;
+    if (su !== undefined) draft.tSubject = su;
+  }
+}
+// filet de sécurité : une copie de l'état avant chaque action, pour pouvoir revenir en arrière
+let UNDO = null;
+function snapshot() {
+  try { UNDO = JSON.stringify(S); } catch (e) { UNDO = null; }
+}
+function undoLast() {
+  if (!UNDO) { toast('Rien à annuler.'); return; }
+  try {
+    const prev = JSON.parse(UNDO);
+    // on écrit DANS l'objet existant (jamais de remplacement : d'autres vues y font référence)
+    for (const k of Object.keys(S)) if (!(k in prev)) delete S[k];
+    Object.assign(S, prev);
+    UNDO = null; cap = null; form = null;
+    applyTheme(); save(); render();
+    toast('Réglage annulé : état précédent restauré.');
+  } catch (e) { console.warn('undo', e); toast('Annulation impossible.'); }
 }
 function snapshot() {
   // champs des fenêtres modales (profil, sauvegarde…) : on garde la saisie
@@ -683,8 +766,8 @@ function courses() {
   const f = form === 'course' ? `<div class="card"><div class="row">
       <input id="c-sub" class="flex1" placeholder="Matière" list="dl-sub" data-act="subInput" value="${esc(draft.cSub || '')}"><input id="c-sem" class="flex1" placeholder="Semestre (S1…)" list="dl-sem" value="${esc(draft.cSem || '')}"><input id="c-title" class="flex1" placeholder="Titre du cours" value="${esc(draft.cTitle || '')}"></div>
     <div class="row" style="margin-top:10px"><span class="mut" style="min-width:52px">Couleur</span>
-      ${PALETTE.map(c => `<button class="sw ${(courseColor || '').toLowerCase() === c.toLowerCase() ? 'sel' : ''}" data-act="pickCourseColor" data-v="${c}" style="background:${c}"></button>`).join('')}
-      <input type="color" id="c-color" value="${PALETTE[0]}" data-act="customCourseColor" title="Couleur personnalisée" style="width:34px;height:26px;padding:1px;border-radius:8px;cursor:pointer;background:var(--bg)">
+      ${PALETTE.map(c => `<button class="sw ${(courseColor || draft.cColor || '').toLowerCase() === c.toLowerCase() ? 'sel' : ''}" data-act="pickCourseColor" data-v="${c}" style="background:${c}"></button>`).join('')}
+      <input type="color" id="c-color" value="${esc(courseColor || draft.cColor || PALETTE[0])}" data-act="customCourseColor" title="Couleur personnalisée" style="width:34px;height:26px;padding:1px;border-radius:8px;cursor:pointer;background:var(--bg)">
       <span class="mut">de la matière</span></div>
     <div class="row" style="margin-top:8px"><span class="btn g s" role="button" tabindex="0" data-act="pick" data-for="impCourse">📄 Importer un Word ou un PDF</span><input type="file" id="c-file" accept=".docx,.pdf,.html,.txt" data-act="impCourse" hidden><span class="mut" id="c-fn"></span></div>
     <textarea id="c-notes" placeholder="Contenu du cours (texte simple, ou importé depuis Word en gardant la mise en forme)" style="margin-top:8px">${esc(draft.cNotes || '')}</textarea>
@@ -717,7 +800,7 @@ function courses() {
     <div class="grid">${gs[sem][sb].map(c => {
       const st = courseStats(c);
       return `<div class="card cc" style="--h:${c.color || subjectColor(sb)}" data-act="openCourse" data-id="${c.id}">
-        <div class="row sp"><h3>${esc(c.title)}</h3><button class="x" data-act="delCourse" data-id="${c.id}">✕</button></div>
+        <div class="row sp"><h3 style="color:${c.color || colorOf(c.subject)}">${dot(c.subject)} ${esc(c.title)}</h3><button class="x" data-act="delCourse" data-id="${c.id}">✕</button></div>
         <div class="mut">${testsOfCourse(c).length} test(s) · ${strip(c.notes).length ? '📄 contenu' : 'vide'}${c.rec && c.rec.on ? ` · 🔁 J${c.rec.days.join('/J')}` : ''}</div>
         <div class="row sp" style="margin-top:6px">${spark(st.ps)}<span>${badgeAvg(st.avg)}</span></div>
         ${c.rec && c.rec.on ? '' : ''}</div>`;
@@ -746,10 +829,10 @@ function courseView() {
 }
 
 function tests() {
-  const f = form === 'test' ? `<div class="card"><div class="row"><input id="t-title" class="flex1" placeholder="Titre du test / QCM">
-    <select id="t-scope" data-act="scope"><option value="course">Lié à un cours</option><option value="subject">Toute une matière</option></select>
-    <select id="t-course" class="flex1">${S.courses.map(c => `<option value="${c.id}">${esc(c.subject)} – ${esc(c.title)}</option>`).join('') || '<option value="">(crée d’abord un cours)</option>'}</select>
-    <input id="t-subject" class="flex1" placeholder="Matière" list="dl-s2" style="display:none"><datalist id="dl-s2">${subjects().map(s => `<option value="${esc(s)}">`).join('')}</datalist></div>
+  const f = form === 'test' ? `<div class="card"><div class="row"><input id="t-title" class="flex1" placeholder="Titre du test / QCM" value="${esc(draft.tTitle || '')}">
+    <select id="t-scope" data-act="scope"><option value="course"${(draft.tScope || 'course') === 'course' ? ' selected' : ''}>Lié à un cours</option><option value="subject"${draft.tScope === 'subject' ? ' selected' : ''}>Toute une matière</option></select>
+    <select id="t-course" class="flex1">${S.courses.map(c => `<option value="${c.id}"${draft.tCourse === c.id ? ' selected' : ''}>${esc(c.subject)} – ${esc(c.title)}</option>`).join('') || '<option value="">(crée d’abord un cours)</option>'}</select>
+    <input id="t-subject" class="flex1" placeholder="Matière" list="dl-s2" value="${esc(draft.tSubject || '')}" style="display:${draft.tScope === 'subject' ? '' : 'none'}"><datalist id="dl-s2">${subjects().map(s => `<option value="${esc(s)}">`).join('')}</datalist></div>
     ${recChips()}
     <div class="row" style="margin-top:8px"><button class="btn" data-act="addTest">Enregistrer</button><button class="btn g" data-act="cancel">Annuler</button></div></div>` : '';
   const help = helpOpen ? `<div class="card info" style="margin-bottom:10px"><b>💡 Import d’un QCM</b>
@@ -760,7 +843,8 @@ function tests() {
   ${S.tests.map(t => {
     const c = S.courses.find(c => c.id === t.courseId), at = cur(t), ps = at.map(pct), n = (t.questions || []).length;
     const noAns = (t.questions || []).filter(q => !(q.answer >= 0)).length;
-    return `<div class="card"><div class="row sp"><div><b>${esc(t.title)}</b><div><span class="tag">${t.scope === 'course' ? 'Cours' : 'Matière'}</span><span class="mut">${esc(t.scope === 'course' ? (c ? c.title : '(cours supprimé)') : t.subject)} · ${n} question(s)${noAns ? ` · <span class="warn">${noAns} sans réponse indiquée</span>` : ''}${rd(t) ? ' · cycle ' + (rd(t) + 1) : ''}</span></div></div>
+    const tcol = testColor(t);
+    return `<div class="card tcard" style="--tc:${tcol};border-left:4px solid ${tcol}"><div class="row sp"><div><b>${dot(t.subject || (c ? c.subject : ''))} ${esc(t.title)}</b><div><span class="tag">${t.scope === 'course' ? 'Cours' : 'Matière'}</span><span class="mut">${esc(t.scope === 'course' ? (c ? c.title : '(cours supprimé)') : t.subject)} · ${n} question(s)${noAns ? ` · <span class="warn">${noAns} sans réponse indiquée</span>` : ''}${rd(t) ? ' · cycle ' + (rd(t) + 1) : ''}</span></div></div>
       <div class="row">${spark(ps)}${badgeAvg(avg(ps))}<button class="x" data-act="delTest" data-id="${t.id}">✕</button></div></div>
       <div class="row" style="margin-top:8px">${n ? `<button class="btn s" data-act="quiz" data-id="${t.id}">▶ Répondre</button>
       <button class="btn g s" data-act="quiz" data-id="${t.id}" data-chrono="1" title="Répondre avec chronomètre">▶⏱</button>` : ''}
@@ -1676,33 +1760,36 @@ function confirmDialog(opts) {
       <h3>${esc(opts.title)}</h3><p>${esc(opts.text || '')}</p>
       <div class="acts"><button class="btn q" data-r="0">${esc(opts.cancel || 'Annuler')}</button>
       <button class="btn ${opts.danger === false ? '' : 'd'}" data-r="1" style="${opts.danger === false ? '' : 'background:var(--bad);border-color:var(--bad);color:#fff'}">${esc(opts.ok || 'Supprimer')}</button></div></div>`;
-    const done = v => { back.remove(); document.removeEventListener('keydown', key); resolve(v); };
+    // confirmDialog n'a pas de champs : rien à mémoriser (et surtout pas de variable « flds »)
+    const done = v => {
+      back.remove(); document.removeEventListener('keydown', key);
+      resolve(v);
+    };
     const key = e => { if (e.key === 'Escape') done(false); if (e.key === 'Enter') done(true); };
     back.addEventListener('click', e => {
       if (e.target === back) return done(false);
       const b = e.target.closest('[data-r]'); if (b) done(b.dataset.r === '1');
     });
     document.addEventListener('keydown', key);
-    // listes liées : la 2e liste de champs dépend de la valeur du 1er
-    if (opts.fields && opts.fields[0] && opts.fields[0].type === 'select') {
-      const s0 = back.querySelector('#pf-0'), s1 = back.querySelector('#pf-1');
-      if (s0 && s1 && s1.tagName === 'SELECT') s0.addEventListener('change', () => {
-        const sub = s0.value;
-        const opts2 = [['', '— Toute la matière —'], ...S.courses.filter(c => !sub || c.subject === sub).map(c => [c.id, c.subject + ' – ' + c.title])];
-        s1.innerHTML = opts2.map(o => `<option value="${esc(o[0])}">${esc(o[1])}</option>`).join('');
-      });
-    }
     document.body.appendChild(back);
     back.querySelector('[data-r="1"]').focus();
   });
 }
+// mémoire de saisie des fenêtres : une valeur déjà tapée est restituée après un rafraîchissement
+let DIALOG_MEM = {};
 function promptDialog(opts) {
   return new Promise(resolve => {
+    const memKey = opts.title || '';
+    const mem = DIALOG_MEM[memKey] || {};
+    const flds = (opts.fields || []).map((f, i) => {
+      const id = f.label || ('champ' + i);
+      return Object.assign({}, f, {value: (mem[id] !== undefined ? mem[id] : (f.value || ''))});
+    });
     const back = document.createElement('div');
     back.className = 'backdrop';
     back.innerHTML = `<div class="modal" role="dialog" aria-modal="true">
       <h3>${esc(opts.title)}</h3><p>${esc(opts.text || '')}</p>
-      <div class="row" style="margin-top:12px">${(opts.fields || []).map((f, i) => f.type === 'color'
+      <div class="row" style="margin-top:12px">${flds.map((f, i) => f.type === 'color'
         ? `<label class="row" style="gap:6px;align-items:center"><input type="color" id="pf-${i}" value="${esc(f.value || '#2f5fd0')}" style="width:46px;height:34px;padding:2px;cursor:pointer"><span class="mut">${esc(f.label)}</span></label>`
         : f.type === 'select'
         ? `<select id="pf-${i}" class="flex1"${f.act ? ' data-act="' + esc(f.act) + '"' : ''}>${(f.options || []).map(o => `<option value="${esc(o[0])}"${String(o[0]) === String(f.value || '') ? ' selected' : ''}>${esc(o[1])}</option>`).join('')}</select>`
@@ -1716,7 +1803,7 @@ function promptDialog(opts) {
       if (e.target === back) return done(null);
       const b = e.target.closest('[data-r]'); if (!b) return;
       if (b.dataset.r === '0') return done(null);
-      done((opts.fields || []).map((f, i) => $('#pf-' + i).value));
+      done(flds.map((f, i) => ($('#pf-' + i) ? $('#pf-' + i).value : f.value)));
     });
     document.addEventListener('keydown', key);
     // listes liées : la 2e liste de champs dépend de la valeur du 1er
@@ -1941,56 +2028,59 @@ async function handleAct(b, e) {
   if (a === 'bkSave') { await bkSave(); return; }
   if (a === 'bkRestore') { await bkRestore(); return; }
 
-  if (!['pick', 'pickQcm', 'pickColor', 'pickCourseColor', 'addSubject', 'addCourse', 'cancel', 'form'].includes(a)) snapshot();
+  // copie de secours AVANT l'action (sauf navigation : on veut annuler un réglage, pas un changement d'onglet)
+  const NO_SNAP = ['pick', 'pickQcm', 'pickColor', 'pickCourseColor', 'addSubject', 'addCourse', 'cancel', 'form',
+    'view', 'openCourse', 'openItem', 'toggle', 'task', 'profMenu', 'themeOpen', 'themeClose', 'qcmHelp',
+    'addMenu', 'moreMenu', 'undoLast', 'installApp', 'installNo', 'readPdf', 'readPdfClose', 'sSem', 'fsem', 'fsub'];
+  // les actions qui ouvrent une fenêtre prennent leur copie juste avant d'appliquer le réglage
+  const DIALOG_ACTS = ['itemRec', 'recEdit', 'editAttempt', 'editNotes', 'relinkTest', 'recPreset', 'recToggle'];
+  if (!NO_SNAP.includes(a) && !DIALOG_ACTS.includes(a)) snapshot();
   if (a === 'view') { view = v; form = null; cap = null; }
   else if (a === 'form') { form = v; mName = ''; draft = {}; draftRec = null; if (v === 'subject') newColor = PALETTE[0]; if (v === 'course') courseColor = null; }
-  else if (a === 'cancel') { form = null; mName = ''; draft = {}; courseColor = null; }
+  else if (a === 'cancel') { form = null; mName = ''; draft = {}; courseColor = null; draftRec = null; }
   else if (a === 'toggle') open[id] = !open[id];
   else if (a === 'task') toggleTask(id, b.dataset.d);
   else if (a === 'openCourse') { cid = id; view = 'course'; }
   else if (a === 'recToggle') {
+    harvestForm();
     const r = nextRec(); draftRec = {on: !r.on, days: r.days};
   }
   else if (a === 'recPreset') {
+    harvestForm();
     const r = nextRec(); const p = PRESETS.find(x => x[0] === v);
     draftRec = {on: true, days: p ? p[1].slice() : r.days};
   }
   else if (a === 'recEdit') {
+    harvestForm();
     const r = nextRec();
     const res = await promptDialog({title:'Personnaliser le rythme', text:'Jours après la création, séparés par des virgules (ex. 1,3,7,30).', fields:[{label:'Jours', value:r.days.join(', ')}], ok:'Appliquer', danger:false});
     if (res) {
       const days = res[0].split(/[,;\s]+/).map(x => parseInt(x, 10)).filter(n => n > 0 && n < 400);
-      if (days.length) draftRec = {on:true, days:[...new Set(days)].sort((a, b) => a - b)};
+      if (days.length) { snapshot(); draftRec = {on:true, days:[...new Set(days)].sort((a, b) => a - b)}; }
       else toast('Aucun jour valide.');
     }
   }
   else if (a === 'recRemember') {
     const r = nextRec();
-    S.set.recPreset = {on: r.on, days: r.days.slice(), name: (PRESETS.find(x => x[1].join(',') === r.days.join(',')) || [null])[0]};
-    save(); toast(t.checked ? 'Rythme mémorisé pour les prochains cours et QCM.' : 'Rythme non mémorisé.');
+    // on mémorise seulement le rythme PAR DÉFAUT des prochains éléments :
+    // les cours et QCM déjà créés gardent leur propre récurrence, intacte
+    if (t.checked) {
+      S.set.recPreset = {on: r.on, days: r.days.slice(), name: (PRESETS.find(x => x[1].join(',') === r.days.join(',')) || [null])[0]};
+      save(); toast('Rythme mémorisé : il sera proposé par défaut pour les prochains cours et QCM. Les éléments existants ne changent pas.');
+    } else {
+      S.set.recPreset = null;
+      save(); toast('Rythme non mémorisé : le réglage par défaut (J1/J3/J7/J30) revient pour les prochains éléments.');
+    }
     return;
   }
   else if (a === 'itemRec') {
-    const kind = b.dataset.kind;
-    const item = kind === 'course' ? S.courses.find(x => x.id === id) : S.tests.find(x => x.id === id);
-    if (!item) return;
-    const r = item.rec || {on:false, days:[1, 3, 7, 30]};
-    const res = await promptDialog({
-      title:'Récurrence de « ' + item.title + ' »',
-      text:'Jours de révision après la création' + (item.createdAt ? ' (' + fmt(item.createdAt) + ')' : '') + '. Vide = pas de rappel automatique.',
-      fields:[{label:'Jours (ex. 1,3,7,30)', value:r.on ? r.days.join(', ') : ''}],
-      ok:'Mettre à jour', danger:false
-    });
-    if (res === null) return;
-    const days = res[0].split(/[,;\s]+/).map(x => parseInt(x, 10)).filter(n => n > 0 && n < 400);
-    item.rec = {on:days.length > 0, days:[...new Set(days)].sort((a, b) => a - b)};
-    removeSchedule(kind, id);
-    scheduleFor({...item, kind});
-    save(); toast(days.length ? 'Révisions mises à jour dans l’agenda.' : 'Révisions automatiques désactivées.');
+    snapshot();
+    await recDialog(b.dataset.kind, id);
   }
+  else if (a === 'undoLast') { undoLast(); return; }
   else if (a === 'openItem') { cid = id; view = 'course'; }
   else if (a === 'pickColor') { newColor = v; const inp = $('#m-color'); if (inp) inp.value = v; }
-  else if (a === 'pickCourseColor') { courseColor = v; const inp = $('#c-color'); if (inp) inp.value = v; }
+  else if (a === 'pickCourseColor') { harvestForm(); courseColor = v; draft.cColor = v; const inp = $('#c-color'); if (inp) inp.value = v; }
   else if (a === 'addSubject') {
     const el = $('#m-name'); if (el) mName = el.value;
     const name = mName.trim();
@@ -2001,9 +2091,10 @@ async function handleAct(b, e) {
     view = 'courses';
   }
   else if (a === 'addCourse') {
+    harvestForm();
     const title = val('c-title'), subject = val('c-sub');
     draft = {}; if (!title || !subject) { toast('Titre et matière sont nécessaires.'); return; }
-    const col = courseColor || (document.getElementById('c-color') || {}).value || colorOf(subject);
+    const col = courseColor || draft.cColor || (document.getElementById('c-color') || {}).value || colorOf(subject);
     if (!S.set.colors) S.set.colors = {};
     if (!S.set.colors[subject]) S.set.colors[subject] = col;
     const rec = nextRec();
@@ -2168,6 +2259,7 @@ async function handleAct(b, e) {
     S.attempts = S.attempts.filter(x => !ts.includes(x.testId)); save();
   }
   else if (a === 'addTest') {
+    harvestForm();
     const title = val('t-title'), scope = val('t-scope'); if (!title) { toast('Donne un titre au test.'); return; }
     const t = {id:uid(), title, scope, round:0, questions:[]};
     if (scope === 'course') { t.courseId = val('t-course'); if (!t.courseId) return; t.subject = S.courses.find(c => c.id === t.courseId).subject; }
@@ -2217,8 +2309,9 @@ async function handleAct(b, e) {
     if (!r) return;
     const sc = parseFloat(String(r[0]).replace(',', '.')), mx = parseFloat(String(r[1]).replace(',', '.'));
     if (isNaN(sc) || isNaN(mx) || mx <= 0 || sc < 0 || sc > mx) { toast('Note invalide : elle doit être comprise entre 0 et le barème.'); return; }
+    snapshot();
     at.score = sc; at.max = mx; at.date = r[2] || at.date;
-    save(); toast('Note modifiée.');
+    save(); render(); toast('Note modifiée.');
   }
   else if (a === 'delAttempt') {
     const at = S.attempts.find(x => x.id === id);

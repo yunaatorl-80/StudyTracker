@@ -165,6 +165,7 @@ footer b{color:var(--tx);font-weight:650}
 /* pastilles de couleur */
 .sw{width:30px;height:26px;border-radius:8px;border:1px solid rgba(0,0,0,.12);cursor:pointer;padding:0;position:relative;transition:transform .1s}
 .sw:hover{transform:translateY(-2px)}
+.sw.sel{outline:2px solid var(--fg);outline-offset:2px;box-shadow:0 0 0 3px var(--card) inset}
 #m-prev{color:var(--ac);font-weight:600}
 
 /* pomodoro + chronomètre */
@@ -427,3 +428,6 @@ span.btn:focus-visible{outline:2px solid var(--ac);outline-offset:2px}
 .docwrap .doc .c{text-align:center}.docwrap .doc .r{text-align:right}.docwrap .doc .j{text-align:justify}
 .docwrap .doc strong,.docwrap .doc b{font-weight:700}
 .docwrap .doc a{color:var(--ac);text-decoration:underline}
+
+/* carte de QCM : rappel de la couleur du cours / de la matière */
+.tcard .tag{background:color-mix(in srgb, var(--tc, var(--acc)) 14%, transparent);color:var(--tc, var(--acc));border-color:color-mix(in srgb, var(--tc, var(--acc)) 30%, transparent)}
